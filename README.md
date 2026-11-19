@@ -1,7 +1,6 @@
 # 共享研讨间预约平台
 
-第 23 组课程项目。使用 Java 17、Maven、Tomcat 10.1 和 MySQL，最终交付一个 Web 应用。首页、模块入口和健康检查已搭好，各模块的业务实现由负责人补写。
-
+第 23 组课程项目。使用 Java 17、Maven、Tomcat 10.1 和 MySQl,最终实现Web 应用。
 ## 三人分工和修改范围
 
 Java 基础路径为 `src/main/java/com/sws/studyroom/`，页面基础路径为 `src/main/webapp/`。
