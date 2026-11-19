@@ -6,5 +6,6 @@ import jakarta.servlet.annotation.WebServlet;
 @WebServlet("/api/booking-rules/*")
 public class BookingRuleServlet extends PendingServlet {
     // TODO(刘婧怡)：实现时段校验、原子下单与占位、模拟支付退款、取消、规则配置及后台信用管理。
+    // 实现 ModuleContracts.BookingAccess，使用 RoomAccess 检查房间，通过 CreditAccess 调整信用。
     // 实现后改为继承 HttpServlet，并按约定为具体路由实现 HTTP 方法。
 }

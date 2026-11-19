@@ -1,6 +1,6 @@
 # 共享研讨间预约平台
 
-第 23 组课程项目。使用 Java 17、Maven、Tomcat 10.1 和 MySQl,最终实现Web 应用。
+第 23 组课程项目。使用 Java 17、Maven、Tomcat 10.1 和 MySQL，最终实现 Web 应用。
 ## 三人分工和修改范围
 
 Java 基础路径为 `src/main/java/com/sws/studyroom/`，页面基础路径为 `src/main/webapp/`。
@@ -13,12 +13,31 @@ Java 基础路径为 `src/main/java/com/sws/studyroom/`，页面基础路径为 
 
 各成员可以在自己的 Java 包和页面目录新增文件，把业务处理和数据库访问拆开。Servlet 的 TODO 处是开发入口。实现实际功能时改为继承 `HttpServlet`，按功能编写 `doGet`、`doPost` 等方法，或拆分为具体 Servlet。公共文件 `pom.xml`、`common/`、首页和 `db/init.sql` 由刘婧怡协调修改。
 
-### 开工前需要对齐的接口
+### 跨模块接口约定
 
-- 沈玉婷定义登录后的用户 ID、角色、房间 ID 和房间状态的接口；刘婧怡和王鑫使用同一套字段。服务端依据登录态判断当前用户和角色。
-- 刘婧怡与王鑫确认订单状态、订单 ID、预约起止时间和释放入口。订单与时段锁由预约模块统一维护，取消或签到相关操作走约定入口，防止重复释放。
-- 王鑫负责业务信用变更，刘婧怡负责后台查询与管理入口。两处共用同一信用流水与记账规则。
-- 下单与占位在同一事务中完成。跨模块表名、字段、枚举和外键先按设计文档确认，再提交 SQL。支付、验证码和门禁按课程要求预留模拟入口。
+直接使用 `common/SessionIdentity.java` 和 `common/ModuleContracts.java` 中的类型。业务实现分别放在分工表对应的 Java 包。浏览器 API 按系统设计说明书的路径，三个占位 Servlet 的路径供框架冒烟测试使用。
+
+| 调用内容 | 负责人和用法 |
+| --- | --- |
+| 登录态 | 沈玉婷在认证成功后调用 `SessionIdentity.signIn`，登出调用 `signOut`。所有模块用 `current` 获取当前用户 ID 和角色。未登录返回 401，已登录但角色或资源权限不足返回 403。房管同时校验房间管理范围，订单、信用及申诉同时校验资源归属。 |
+| 房间 | 沈玉婷实现 `RoomAccess.findRoom`。接口返回 `room_id`、`listing_status`、`maintenance_status`。只有 `LISTED` 且 `NORMAL` 才能提交新预约。某时段可用性还要查询占用。 |
+| 订单与时段 | 刘婧怡实现 `BookingAccess`。王鑫签到及释放时调用其方法。签到进入使用中；结束、超时或取消等场景由预约模块校验状态和原因后删除对应的时段占用。退款处理中保留占用，退款成功后才释放。 |
+| 信用 | 王鑫实现 `CreditAccess`。正常履约、违约、冲正和后台人工调整都通过 `applyChange` 记账。刘婧怡的后台调用该接口。事件号重试时保持不变，数据库唯一约束保证一次记账。 |
+
+- JSON 字段用下划线命名。用户、房间、订单及规则快照分别用 `user_id`、`room_id`、`booking_id`、`rule_version_id`，对应 Java `long` 和 MySQL `BIGINT`。事件号使用 `event_id` 字符串。跨 Web 接口的 ID 使用十进制字符串，避免 JavaScript 数字精度丢失。
+- 时间用 `start_time`、`end_time`，采用 Asia/Shanghai 本地业务时间、ISO 格式 `yyyy-MM-dd'T'HH:mm:ss`，数据库用 `DATETIME`。预约区间左闭右开。截止时间由服务端判定。
+- 角色编码为 `USER`、`ROOM_ADMIN`、`SUPER_ADMIN`。房间上架为 `LISTED`，下架为 `UNLISTED`，正常为 `NORMAL`，维护为 `MAINTENANCE`。订单状态 `PENDING_PAYMENT`、`PENDING_CHECKIN`、`IN_USE`、`CANCELLED`、`FINISHED` 分别对应待支付、待签到、使用中、已取消、已结束。支付和退款结果分别记录在资金表。
+| 事件 | 处理前 → 处理后 | 时段占用 |
+| --- | --- | --- |
+| 下单、支付成功、有效签到 | 创建待支付 → 待签到 → 使用中 | 创建后持续占用 |
+| 支付前取消、支付超时或失败 | 待支付 → 已取消 | 立即释放 |
+| 申请退款 | 待签到 → 已取消 | 保留占用 |
+| 退款成功回调 | 已取消 → 已取消 | 仅释放尚保留的占用，重复回调不重复处理 |
+| 超时未签到 | 待签到 → 已取消 | 释放并按规则记录违约 |
+| 提前结束或到期 | 使用中 → 已结束 | 释放 |
+
+- 下单和占位使用同一 JDBC 事务。`slot_lock` 按 `(room_id, slot_start)` 和 `(user_id, slot_start)` 分别设唯一约束。涉及多个模块的写操作由调用者开启事务并传入同一 `Connection`，被调用模块不提交、回滚或关闭它。信用流水和余额也在同一事务更新。签到、释放或信用事件重试时沿用同一事件号。
+- 数据库表和外键以设计说明书第 7 章为准。`user`、`room` 归沈玉婷，`booking`、`slot_lock`、`payment`、`refund`、`rule_version`、`rule_tier` 归刘婧怡，`usage`、`credit_ledger`、`violation`、`review`、`fault`、`appeal` 归王鑫。模拟验证码、支付和门禁分别由沈玉婷、刘婧怡、王鑫实现。
 
 ## 本地启动
 
