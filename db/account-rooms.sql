@@ -37,9 +37,16 @@ CREATE TABLE IF NOT EXISTS room (
     INDEX idx_room_available (listing_status, maintenance_status, capacity)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
--- 演示账号由页面注册获得。需要房管账号时，先注册 room_admin，再执行：
--- UPDATE `user` SET role = 'ROOM_ADMIN' WHERE username = 'room_admin';
--- 实际环境不应开放页面修改角色。
+-- 本地演示用预置房管账号：room_admin / Admin@123456。
+-- 密码以 PBKDF2WithHmacSHA256（120000 次迭代）保存；生产环境应通过安全的
+-- 身份管理流程创建账号，并更换这里的默认密码。
+INSERT IGNORE INTO `user`
+    (username, phone, password_salt, password_hash, role, account_status)
+VALUES
+    ('room_admin', '13800000002',
+     '6d79526f6f6d41646d696e3230323631',
+     '06fed1d39b3c6c536eb54e12beb56b905ec8605f1fb870b1f8929884a70a2e9f',
+     'ROOM_ADMIN', 'ACTIVE');
 
 INSERT IGNORE INTO room
     (room_id, room_name, location, capacity, opening_hours, listing_status, maintenance_status)
@@ -48,3 +55,8 @@ VALUES
     (9102, 'A201 大型研讨间', '图书馆二层 A201', 8, '08:00-22:00', 'LISTED', 'NORMAL'),
     (9103, 'B301 设备维护间', '综合楼三层 B301', 12, '09:00-18:00', 'LISTED', 'MAINTENANCE'),
     (9104, 'B302 暂未开放间', '综合楼三层 B302', 6, '09:00-18:00', 'UNLISTED', 'NORMAL');
+
+-- 让预置房管可直接演示编辑、上下架与维护 9101/9102。
+UPDATE room
+SET manager_user_id = (SELECT user_id FROM `user` WHERE username = 'room_admin')
+WHERE room_id IN (9101, 9102);
