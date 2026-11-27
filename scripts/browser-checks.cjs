@@ -14,10 +14,12 @@ const check = (condition, name) => { assert.ok(condition, name); console.log('PA
     page.on('pageerror', error => pageErrors.push(error.message));
     await page.goto(base);
     await page.locator('.room-card').first().waitFor();
+    check(await page.locator('h1').innerText() === '预约总览', 'the main URL opens the booking dashboard');
+    check(await page.locator('.overview-metric strong').nth(2).innerText() === '—', 'guest credit is withheld');
     check(await page.locator('.room-card').count() >= 2, 'rooms load from real database');
     await page.screenshot({ path: `${output}/desktop-rooms.png`, fullPage: true });
     check(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), 'desktop has no horizontal overflow');
-    await page.getByRole('button', { name: '登录 / 注册', exact: true }).click();
+    await page.locator('#header-auth [data-action=login]').click();
     await page.getByRole('button', { name: '注册账号', exact: true }).click();
     const suffix = Date.now().toString();
     const username = 'web_ci_' + suffix;
@@ -36,8 +38,14 @@ const check = (condition, name) => { assert.ok(condition, name); console.log('PA
     await page.getByRole('button', { name: '确认预约', exact: true }).click();
     await page.locator('.order-card .badge.PENDING_PAYMENT').waitFor();
     check(true, 'booking form creates an actual unpaid order');
+    await page.locator('[data-view=overview]').click();
+    await page.locator('.overview-booking .badge.PENDING_PAYMENT').waitFor();
+    await page.screenshot({ path: `${output}/desktop-overview.png`, fullPage: true });
     await page.getByRole('button', { name: '模拟支付', exact: true }).click();
     await page.getByRole('button', { name: '确认操作', exact: true }).click();
+    await page.locator('.overview-booking .badge.PENDING_CHECKIN').waitFor();
+    check(await page.locator('.overview-track [aria-current=step]').innerText() === '已支付', 'dashboard action advances the real booking timeline');
+    await page.locator('[data-view=orders]').click();
     await page.locator('.order-card .badge.PENDING_CHECKIN').waitFor();
     check(true, 'payment updates actual order');
     await page.getByRole('button', { name: '查看退款', exact: true }).click();
@@ -84,7 +92,7 @@ const check = (condition, name) => { assert.ok(condition, name); console.log('PA
     await mobile.locator('.room-card').first().waitFor();
     check(await mobile.evaluate(() => document.documentElement.scrollWidth <= innerWidth), 'mobile has no horizontal overflow');
     await mobile.screenshot({ path: `${output}/mobile-rooms.png`, fullPage: true });
-    await mobile.getByRole('button', { name: '登录 / 注册', exact: true }).click();
+    await mobile.locator('#header-auth [data-action=login]').click();
     check(await mobile.locator('#modal').evaluate(node => {const r=node.getBoundingClientRect();return r.left>=0&&r.right<=innerWidth;}), 'mobile authentication dialog fits viewport');
     check(pageErrors.length === 0, 'no JavaScript page errors: ' + pageErrors.join('; '));
     await browser.close();

@@ -14,8 +14,7 @@ const state = {identity:{authenticated:false},csrf:'',rooms:[],orders:[],rule:nu
 let toastTimer, renderId = 0;
 function toast(message, error = false) { const node=$('#toast'); node.className=`toast${error?' error':''}`;node.textContent=message;node.hidden=false;clearTimeout(toastTimer);toastTimer=setTimeout(()=>node.hidden=true,5000); }
 function empty(title, description='', action='') { return `<div class="empty">${icon('room')}<h3>${e(title)}</h3><p>${e(description)}</p>${action}</div>`; }
-function heading(title, description, right='') { return `<div class="page-heading"><div><p class="eyebrow">STUDYROOM / 校园研讨空间</p><h1>${e(title)}</h1><p>${e(description)}</p></div>${right}</div>`; }
-function footer() { return '<footer class="app-footer"><span>研间 · 共享研讨间预约平台</span><span>专注每一次讨论，让空间更有价值。</span></footer>'; }
+function heading(title, description, right='') { return `<div class="page-heading"><div><h1>${e(title)}</h1>${description ? `<p>${e(description)}</p>` : ''}</div>${right}</div>`; }
 function button(text, action, extra='', primary=false) { return `<button class="btn${primary?' primary':''}" data-action="${e(action)}" ${extra}>${text}</button>`; }
 async function api(module, path, {method='GET',data,format='json'}={}) {
     const url = new URL(`api/${module}${path}`,base);
@@ -50,27 +49,103 @@ function fields(form) { return Object.fromEntries(new FormData(form).entries());
 function requireIdentityPage(title) { return heading(title,'登录后查看与你有关的记录。')+`<div class="panel">${empty('登录，继续你的研讨之旅','预约、信用与反馈记录都会保存在你的账户中。',button('登录 / 注册','login','',true))}</div>`; }
 async function render() {
     const version=++renderId;
-    const requested=location.hash.slice(1)||new URLSearchParams(location.search).get('view')||'rooms';
-    state.view=['rooms','orders','credit','feedback','admin','account','help','usage'].includes(requested)?requested:'rooms';
+    const requested=location.hash.slice(1)||new URLSearchParams(location.search).get('view')||'overview';
+    state.view=['overview','rooms','orders','credit','feedback','admin','account','help','usage'].includes(requested)?requested:'overview';
     if(state.view==='usage')state.view='orders';
-    const titles={rooms:'探索空间',orders:'我的预约',credit:'信用记录',feedback:'反馈与申诉',admin:'管理工作台',account:'我的账户',help:'使用指南'};
+    const titles={overview:'预约总览',rooms:'探索空间',orders:'我的预约',credit:'信用记录',feedback:'反馈与申诉',admin:'管理工作台',account:'我的账户',help:'使用指南'};
     $('#breadcrumb').textContent=titles[state.view];document.title=`${titles[state.view]} · 研间`;
-    document.querySelectorAll('.nav a').forEach(a=>a.classList.toggle('active',a.dataset.view===state.view));
+    document.querySelectorAll('.nav a').forEach(a=>{
+        const active=a.dataset.view===state.view;
+        a.classList.toggle('active',active);
+        if(active) a.setAttribute('aria-current','page');
+        else a.removeAttribute('aria-current');
+    });
     $('#content').innerHTML='<div class="loading"><span class="spinner"></span>正在加载</div>';
     try {
         let html;
         if(['orders','credit','feedback','admin','account'].includes(state.view)&&!state.identity.authenticated)html=requireIdentityPage(titles[state.view]);
-        else html=await ({rooms:renderRooms,orders:renderOrders,credit:renderCredit,feedback:renderFeedback,admin:renderAdmin,account:renderAccount,help:renderHelp}[state.view])();
-        if(version!==renderId)return;$('#content').innerHTML=html+footer();
-    }catch(error){if(version!==renderId)return;$('#content').innerHTML=heading(titles[state.view],'')+`<div class="panel">${empty('暂时无法加载',error.message,button('重新加载','refresh'))}</div>`+footer();}
+        else html=await ({overview:renderOverview,rooms:renderRooms,orders:renderOrders,credit:renderCredit,feedback:renderFeedback,admin:renderAdmin,account:renderAccount,help:renderHelp}[state.view])();
+        if(version!==renderId)return;$('#content').innerHTML=html;
+    }catch(error){if(version!==renderId)return;$('#content').innerHTML=heading(titles[state.view],'')+`<div class="panel">${empty('暂时无法加载',error.message,button('重新加载','refresh'))}</div>`;}
+}
+const activeBookingStatuses = ['PENDING_PAYMENT','PENDING_CHECKIN','IN_USE'];
+function overviewMetric(name, value, symbol, href) {
+    return `<a class="overview-metric" href="${href}">
+        <span class="metric-symbol">${icon(symbol)}</span>
+        <span><span class="metric-label">${name}</span><strong>${e(value)}</strong></span>
+        ${icon('arrow')}
+    </a>`;
+}
+function overviewBooking(orders, signedIn, ordersUnavailable) {
+    const active = orders.filter(order=>activeBookingStatuses.includes(order.booking_status));
+    const inUse = active.find(order=>order.booking_status==='IN_USE');
+    const next = inUse || active.sort((a,b)=>String(a.start_time).localeCompare(String(b.start_time)))[0];
+    if (!next) {
+        if (!signedIn) return empty('登录后查看预约进度','在这里查看待支付、待签到和使用中的预约。',button('登录 / 注册','login','',true));
+        if (ordersUnavailable) return empty('暂时无法读取预约','请稍后刷新。',button('重新加载','refresh'));
+        return empty('暂无进行中的预约','选一间研讨室，安排下一次讨论。',button('查找研讨间','explore','',true));
+    }
+    const step = activeBookingStatuses.indexOf(next.booking_status);
+    const action = [
+        ['pay','模拟支付','请在订单的支付截止时间前完成支付。'],
+        ['checkin','签到开门','请在订单允许的签到时间内操作。'],
+        ['finish','结束使用','结束后，剩余时段会释放。']
+    ][step];
+    const track = ['已提交','已支付','已签到','已结束'].map((name,index)=>{
+        const css = index < step ? 'done' : index === step ? 'current' : '';
+        return `<li class="${css}" ${index===step?'aria-current="step"':''}>${name}</li>`;
+    }).join('');
+    return `<div class="overview-booking">
+        <div class="overview-booking-title"><div><small>预约 #${e(next.booking_id)}</small><h3>${e(next.room_name||'研讨间 '+next.room_id)}</h3></div>${badge(next.booking_status)}</div>
+        <p class="overview-time">${icon('clock')} ${e(dateText(next.start_time))}–${e(String(next.end_time).slice(11,16))}</p>
+        <ol class="overview-track" aria-label="预约进度">${track}</ol>
+        <div class="overview-booking-actions"><small>${action[2]}</small>${button(action[1],action[0],`data-id="${e(next.booking_id)}"`,true)}</div>
+    </div>`;
+}
+function compactRoomCard(room) {
+    return `<article class="room-card compact-space">
+        <span class="metric-symbol">${icon('room')}</span>
+        <div class="compact-space-name"><h3>${e(room.room_name)}</h3><p>${e(room.location)}</p></div>
+        <span class="compact-space-fact">${icon('users')} ${e(room.capacity)} 人</span>
+        <span class="compact-space-fact">${icon('clock')} ${e(room.opening_hours)}</span>
+        <button class="btn primary small" data-action="reserve" data-id="${e(room.room_id)}">预约空间</button>
+    </article>`;
+}
+async function renderOverview() {
+    const signedIn = state.identity.authenticated;
+    const [rooms, orders, credit] = await Promise.allSettled([
+        account('/rooms'),
+        signedIn ? bookings('/order-data',{format:'json'}) : Promise.resolve([]),
+        signedIn ? feedback('/me/credit') : Promise.resolve(null)
+    ]);
+    state.rooms = rooms.status==='fulfilled' ? rooms.value.rooms : [];
+    state.orders = orders.status==='fulfilled' ? orders.value : [];
+    const activeCount=state.orders.filter(o=>activeBookingStatuses.includes(o.booking_status)).length;
+    const creditScore=credit.status==='fulfilled' ? credit.value?.credit_score : null;
+    const recent=state.orders.slice(0,4);
+    return `${heading('预约总览','',button(`${icon('plus')}查找研讨间`,'explore','',true))}
+        <div class="overview-metrics" aria-label="预约数据">
+            ${overviewMetric('开放预约的房间',rooms.status==='fulfilled'?state.rooms.length:'—','room','#rooms')}
+            ${overviewMetric('进行中的预约',signedIn&&orders.status==='fulfilled'?activeCount:'—','calendar','#orders')}
+            ${overviewMetric('我的信用分',creditScore==null?'—':creditScore,'shield','#credit')}
+        </div>
+        <div class="overview-grid">
+            <section class="panel overview-panel"><div class="overview-panel-head"><h2>预约进度</h2><a class="link-button" href="#orders">我的预约 ${icon('arrow')}</a></div>${overviewBooking(state.orders,signedIn,orders.status==='rejected')}</section>
+            <section class="panel overview-panel"><div class="overview-panel-head"><h2>最近预约</h2></div>
+                ${recent.length?`<ul class="overview-recent">${recent.map(o=>`<li><div><strong>${e(o.room_name||'研讨间 '+o.room_id)}</strong><small>${e(dateText(o.start_time))}</small></div>${badge(o.booking_status)}</li>`).join('')}</ul>`:empty(signedIn?(orders.status==='rejected'?'暂时无法读取预约':'暂无预约记录'):'登录后查看','')}
+            </section>
+        </div>
+        <section class="panel overview-panel overview-spaces"><div class="overview-panel-head"><h2>开放预约的房间</h2><a class="link-button" href="#rooms">全部空间 ${icon('arrow')}</a></div>
+            ${state.rooms.length?state.rooms.slice(0,5).map(compactRoomCard).join(''):empty(rooms.status==='rejected'?'暂时无法加载房间':'暂无开放预约的房间','')}
+        </section>`;
 }
 async function renderRooms() {
     const params={keyword:state.keyword||'',min_capacity:state.capacity||''};
     const [result]=await Promise.all([account('/rooms',{data:params}),state.identity.authenticated?loadRule():Promise.resolve()]);state.rooms=result.rooms;
-    const hero=`<section class="hero"><div class="hero-copy"><p class="eyebrow">A SPACE FOR GOOD IDEAS</p><h1>让好想法，有处可谈。</h1><p>找到一处合适的空间，让专注、协作与灵感在这里发生。</p><div class="hero-meta"><span>${icon('calendar')}在线预约</span><span>${icon('users')}小组研讨</span><span>${icon('shield')}信用共享</span></div></div><img class="hero-art" src="${new URL('room-scene.svg',base)}" alt="明亮安静的研讨空间插画"></section>`;
     const toolbar=`<form class="toolbar" id="search-form"><div class="search-wrap">${icon('search')}<input name="keyword" placeholder="搜索房间名称或位置" aria-label="搜索房间" value="${e(state.keyword||'')}"></div><select name="min_capacity" aria-label="筛选容纳人数">${[['','不限人数'],['4','4 人及以上'],['6','6 人及以上'],['8','8 人及以上'],['12','12 人及以上']].map(([v,l])=>`<option value="${v}" ${state.capacity===v?'selected':''}>${l}</option>`).join('')}</select><button class="btn" type="submit">筛选空间</button><span class="count">共 ${state.rooms.length} 个空间</span></form>`;
     const cards=state.rooms.map(room=>`<article class="room-card"><div class="room-visual"><img src="${new URL('room-scene.svg',base)}" alt="研讨间空间示意图"><span class="room-tag"><i class="dot"></i>开放预约</span></div><div class="room-body"><h3>${e(room.room_name)}</h3><div class="room-location">${icon('pin')}${e(room.location)} · ${e(room.room_id)}</div><div class="room-details"><span>${icon('users')}${e(room.capacity)} 人</span><span>${icon('clock')}${e(room.opening_hours)}</span></div><div class="room-bottom">${state.rule?`<div class="room-price">¥${money(state.rule.hourly_price)} <span>/ 小时</span></div>`:'<small>登录后查看预约规则</small>'}<button class="btn primary small" data-action="reserve" data-id="${e(room.room_id)}">预约空间 ${icon('arrow')}</button></div></div></article>`).join('');
-    return hero+toolbar+`<div class="section-title"><h2>选择你的研讨空间</h2><small>占用情况以提交预约时校验为准</small></div><section class="room-grid">${cards||empty('暂时没有匹配的空间','试试调整关键词或容纳人数。')}</section>`+`<div class="info-strip"><div>${icon('calendar')}<div><h3>提前安排，从容讨论</h3><p>${state.rule?`可提前 ${e(state.rule.advance_days)} 天预约，每日最多 ${e(state.rule.daily_slots)} 个时段`:'登录后查看当前预约规则'}</p></div></div><div>${icon('clock')}<div><h3>准时到场，及时释放</h3><p>按约签到，结束后释放空间供他人使用</p></div></div><div>${icon('shield')}<div><h3>共享空间，共守信用</h3><p>查看个人信用记录，珍惜每一处研讨空间</p></div></div></div>`;
+    const rules=state.rule?`可提前 ${e(state.rule.advance_days)} 天预约，每日最多 ${e(state.rule.daily_slots)} 个时段。`:'按名称、位置或人数查找研讨间。';
+    return heading('探索空间',rules)+toolbar+`<section class="room-grid" aria-label="研讨间列表">${cards||empty('暂时没有匹配的空间','试试调整关键词或容纳人数。')}</section>`;
 }
 async function renderOrders() {
     await loadOrders();const tabs=[['all','全部预约'],['PENDING_PAYMENT','待支付'],['PENDING_CHECKIN','待签到'],['IN_USE','使用中'],['FINISHED','已结束'],['CANCELLED','已取消']];
