@@ -106,27 +106,28 @@ function overviewBooking(orders, signedIn, ordersUnavailable) {
 function compactRoomCard(room) {
     return `<article class="room-card compact-space">
         <span class="metric-symbol">${icon('room')}</span>
-        <div class="compact-space-name"><h3>${e(room.room_name)}</h3><p>${e(room.location)}</p></div>
+        <div class="compact-space-name"><h3><button class="link-button room-title-button" data-action="room-details" data-id="${e(room.room_id)}">${e(room.room_name)}</button></h3>
+        <p>${e(room.location)} · ${e(availabilityLabels[room.availability])}</p></div>
         <span class="compact-space-fact">${icon('users')} ${e(room.capacity)} 人</span>
         <span class="compact-space-fact">${icon('clock')} ${e(room.opening_hours)}</span>
-        <button class="btn primary small" data-action="reserve" data-id="${e(room.room_id)}">预约空间</button>
+        ${room.maintenance_status==='NORMAL'?button('预约空间','reserve',`data-id="${e(room.room_id)}"`,true):''}
     </article>`;
 }
 async function renderOverview() {
     const signedIn = state.identity.authenticated;
     const [rooms, orders, credit] = await Promise.allSettled([
-        account('/rooms'),
+        account('/catalog'),
         signedIn ? bookings('/order-data',{format:'json'}) : Promise.resolve([]),
         signedIn ? feedback('/me/credit') : Promise.resolve(null)
     ]);
-    state.rooms = rooms.status==='fulfilled' ? rooms.value.rooms : [];
+    state.rooms = rooms.status==='fulfilled' ? rooms.value.items : [];
     state.orders = orders.status==='fulfilled' ? orders.value : [];
     const activeCount=state.orders.filter(o=>activeBookingStatuses.includes(o.booking_status)).length;
     const creditScore=credit.status==='fulfilled' ? credit.value?.credit_score : null;
     const recent=state.orders.slice(0,4);
     return `${heading('预约总览','',button(`${icon('plus')}查找研讨间`,'explore','',true))}
         <div class="overview-metrics" aria-label="预约数据">
-            ${overviewMetric('开放预约的房间',rooms.status==='fulfilled'?state.rooms.length:'—','room','#rooms')}
+            ${rooms.status==='fulfilled'?overviewMetric('已上架房间',rooms.value.total,'room','#rooms'):''}
             ${overviewMetric('进行中的预约',signedIn&&orders.status==='fulfilled'?activeCount:'—','calendar','#orders')}
             ${overviewMetric('我的信用分',creditScore==null?'—':creditScore,'shield','#credit')}
         </div>
@@ -136,12 +137,15 @@ async function renderOverview() {
                 ${recent.length?`<ul class="overview-recent">${recent.map(o=>`<li><div><strong>${e(o.room_name||'研讨间 '+o.room_id)}</strong><small>${e(dateText(o.start_time))}</small></div>${badge(o.booking_status)}</li>`).join('')}</ul>`:empty(signedIn?(orders.status==='rejected'?'暂时无法读取预约':'暂无预约记录'):'登录后查看','')}
             </section>
         </div>
-        <section class="panel overview-panel overview-spaces"><div class="overview-panel-head"><h2>开放预约的房间</h2><a class="link-button" href="#rooms">全部空间 ${icon('arrow')}</a></div>
-            ${state.rooms.length?state.rooms.slice(0,5).map(compactRoomCard).join(''):empty(rooms.status==='rejected'?'暂时无法加载房间':'暂无开放预约的房间','')}
+        <section class="panel overview-panel overview-spaces"><div class="overview-panel-head"><h2>研讨间</h2><a class="link-button" href="#rooms">全部空间 ${icon('arrow')}</a></div>
+            ${state.rooms.length?state.rooms.slice(0,5).map(compactRoomCard).join(''):empty(rooms.status==='rejected'?'暂时无法加载房间':'暂无已上架房间','')}
         </section>`;
 }
 const availabilityLabels = {AVAILABLE:'空闲',OCCUPIED:'已占用',MAINTENANCE:'维护中',CLOSED:'未开放',UNLISTED:'已下架'};
-const roomEquipment = [['has_projector','投影仪'],['has_whiteboard','白板'],['has_outlets','插座']];
+const roomEquipment = [['has_projector','投影仪'],['has_whiteboard','白板'],['has_outlets','插座'],['has_multimedia','多媒体设备']];
+function equipmentNames(room) {
+    return roomEquipment.filter(([key])=>Number(room[key])===1).map(([,title])=>title);
+}
 function equipmentOptions(values) {
     return roomEquipment.map(([key,title])=>`<label><span><input type="checkbox" name="${key}" value="1"
         ${Number(values[key])===1?'checked':''}> ${title}</span></label>`).join('');
@@ -162,7 +166,7 @@ function paging(result, action) {
 function catalogFilters(id, params, admin=false) {
     return `<form class="panel catalog-filter" id="${id}"><div class="form-grid">
         ${admin?`<label>房间名称<input name="name" value="${e(params.name)}"></label><label>位置<input name="location" value="${e(params.location)}"></label>`:
-        `<label>空间或位置<input name="keyword" value="${e(params.keyword)}"></label>`}
+        `<label>空间或位置<input name="keyword" value="${e(params.keyword)}"></label><label>位置<input name="location" value="${e(params.location)}"></label>`}
         <label>最少人数<input name="min_capacity" type="number" min="1" max="10000" value="${e(params.min_capacity)}"></label>
         ${filterSelect('availability','状态',[['','全部'],...Object.entries(availabilityLabels).filter(([key])=>admin||key!=='UNLISTED')],params.availability)}
         ${filterSelect('sort','排序',[['id','房间编号'],['name','名称'],['capacity','容量从小到大'],['location','位置']],params.sort)}
@@ -178,10 +182,13 @@ async function renderRooms() {
         const id = `data-id="${e(room.room_id)}"`;
         const book = room.maintenance_status === 'NORMAL'
             ? button('预约空间','reserve',id,true) : '';
-        return `<article class="room-card"><div class="room-visual"><img src="${new URL('room-scene.svg',base)}" alt="研讨间空间示意图"></div><div class="room-body">
+        const equipment = equipmentNames(room);
+        return `<article class="room-card"><div class="room-body">
             <span class="badge ${e(room.availability)}">${e(availabilityLabels[room.availability])}</span>
             <h3>${e(room.room_name)}</h3><div class="room-location">${icon('pin')}${e(room.location)} · ${e(room.room_id)}</div>
             <div class="room-details"><span>${icon('users')}${e(room.capacity)} 人</span><span>${icon('clock')}${e(room.opening_hours)}</span></div>
+            ${equipment.length? `<ul class="room-equipment" aria-label="设备配置">${equipment.map(name=>`<li>${e(name)}</li>`).join('')}</ul>`:''}
+            ${!equipment.length&&room.equipment_details?`<p class="room-equipment-note">${e(room.equipment_details)}</p>`:''}
             <div class="room-bottom">${button('房间详情','room-details',id)}${book}</div></div></article>`;
     }).join('');
     const timeHint = params.start_time ? '状态按所选时段计算。' : '状态按当前时间计算，也可查询指定时段。';
@@ -192,11 +199,12 @@ async function renderRooms() {
 
 async function roomDetails(roomId) {
     if (!mustLogin()) return;
-    const room = state.rooms.find(item=>item.room_id===roomId);
-    if (!room) throw new Error('房间列表已变化，请刷新后再试。');
-    if (!state.rule) await loadRule();
+    const filters = state.view === 'rooms' ? state.roomFilters : null;
+    const data = {room_id:roomId,start_time:filters?.start_time,end_time:filters?.end_time};
+    const [room] = await Promise.all([account('/catalog/detail',{data}),loadRule()]);
     const id = `data-id="${e(roomId)}"`;
-    const equipment=roomEquipment.filter(([key])=>Number(room[key])===1).map(([,title])=>title);
+    const equipment=equipmentNames(room);
+    const hasProfile = room.has_projector != null;
     const panorama=room.panorama_url&&/^https:\/\//i.test(room.panorama_url)
         ? `<img class="room-panorama" src="${e(room.panorama_url)}" alt="${e(room.room_name)}全景图" referrerpolicy="no-referrer">` : '';
     showModal(room.room_name,`${panorama}<div class="profile-fields">
@@ -204,13 +212,19 @@ async function roomDetails(roomId) {
         <div><span>房间编号</span><b>${e(roomId)}</b></div>
         <div><span>容量</span><b>${e(room.capacity)} 人</b></div>
         <div><span>开放时间</span><b>${e(room.opening_hours)}</b></div>
-        <div><span>当前查询状态</span><b>${e(availabilityLabels[room.availability])}</b></div>
-        <div><span>设备</span><b>${equipment.length?equipment.join('、'):'暂无设备信息'}</b></div>
+        <div><span>${data.start_time?'所选时段状态':'当前状态'}</span><b>${e(availabilityLabels[room.availability])}</b></div>
+        ${hasProfile?`<div><span>设备配置</span><b>${e(equipment.join('、')||room.equipment_details||'无配套设备')}</b></div>`:''}
         <div><span>预约费用</span><b>¥${money(state.rule.hourly_price)} / 小时</b></div>
-        </div>${room.usage_rules?`<p class="notice">${e(room.usage_rules)}</p>`:''}
+        </div>${equipment.length&&room.equipment_details?`<section class="room-profile-note"><h3>设备说明</h3><p>${e(room.equipment_details)}</p></section>`:''}
+        ${room.usage_rules?`<section class="room-profile-note"><h3>使用规则</h3><p>${e(room.usage_rules)}</p></section>`:''}
         <p class="notice">可提前 ${e(state.rule.advance_days)} 天预约。每人每天最多 ${e(state.rule.daily_slots)} 个时段。</p>
         <div class="form-actions">${button('历史评价','room-reviews',id)}
         ${room.maintenance_status==='NORMAL'?button('预约空间','reserve',id,true):''}</div>`);
+    const photo = $('.room-panorama', $('#modal-body'));
+    if (photo) {
+        photo.addEventListener('error', () => photo.remove(), {once:true});
+        if (photo.complete && !photo.naturalWidth) photo.remove();
+    }
 }
 
 function attachmentLinks(items=[]) {
@@ -398,8 +412,9 @@ function editRoom(id) {
         <label>容纳人数<input name="capacity" type="number" min="1" max="10000" value="${e(room.capacity||4)}" required></label>
         <label>开放时间<input name="opening_hours" pattern="[0-9]{2}:[0-9]{2}-[0-9]{2}:[0-9]{2}" value="${e(room.opening_hours||'08:00-22:00')}" required></label>
         ${equipmentOptions(room)}
-        <label class="full">使用说明<textarea name="usage_rules" maxlength="500">${e(room.usage_rules)}</textarea></label>
-        <label class="full">全景图片链接<input name="panorama_url" type="url" maxlength="512" placeholder="https://" value="${e(room.panorama_url)}"></label>
+        <label class="full">设备补充说明<textarea name="equipment_details" maxlength="200">${e(room.equipment_details)}</textarea></label>
+        <label class="full">使用规则<textarea name="usage_rules" maxlength="500" required>${e(room.usage_rules)}</textarea></label>
+        <label class="full">全景照片链接<input name="panorama_url" type="url" maxlength="512" value="${e(room.panorama_url)}"></label>
         ${state.identity.role==='SUPER_ADMIN'?`<label class="full">负责管理员编号<input name="manager_user_id" inputmode="numeric" pattern="[0-9]+" value="${e(room.manager_user_id)}" placeholder="填写可用管理员编号，可留空"></label>`:''}
         </div><div class="form-actions"><button class="btn primary">保存空间</button></div></form>`);
 }

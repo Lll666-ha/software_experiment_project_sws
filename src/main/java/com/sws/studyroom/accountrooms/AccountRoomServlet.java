@@ -91,6 +91,13 @@ public class AccountRoomServlet extends HttpServlet implements ModuleContracts.R
             case "/admin/rooms/impact" -> roomImpact(c,r);
             case "/admin/rooms" -> { requireAdmin(r); yield rooms(c, r, true); }
             case "/catalog" -> com.sws.studyroom.common.Json.encode(RoomCatalog.search(c, r, null));
+            case "/catalog/detail" -> {
+                if (SessionIdentity.current(r).isEmpty()) throw new Failure(401, "请先登录");
+                long roomId = longNumber(required(r, "room_id"), 1, "房间编号");
+                var room = RoomCatalog.detail(c, r, roomId);
+                if (room == null) throw new Failure(404, "该研讨间已下架或不存在");
+                yield com.sws.studyroom.common.Json.encode(room);
+            }
             case "/admin/catalog" -> com.sws.studyroom.common.Json.encode(RoomCatalog.search(c, r, requireAdmin(r)));
             default -> throw new Failure(404, "接口不存在");
         };

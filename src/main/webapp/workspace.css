@@ -99,3 +99,35 @@
   .overview-metric { padding-inline: 12px; }
   .overview-panel { padding-inline: 13px; }
 }
+.room-title-button {
+  padding: 0;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+}
+.room-title-button:hover { text-decoration: underline; }
+.room-equipment {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  list-style: none;
+  margin: 12px 0 0;
+  padding: 0;
+}
+.room-equipment li {
+  border-radius: 5px;
+  background: #e9f1fa;
+  color: #365474;
+  padding: 4px 8px;
+  font-size: 12px;
+}
+.room-equipment-note, .room-profile-note p {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.65;
+  overflow-wrap: anywhere;
+}
+.room-equipment-note { margin-top: 12px; }
+.room-profile-note { margin: 16px 0; }
+.room-profile-note h3 { margin-bottom: 4px; font-size: 14px; }
+.room-profile-note p { white-space: pre-line; }
