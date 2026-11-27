@@ -161,6 +161,14 @@ public final class IntegrationChecks {
         ok(superAdmin.request(booking,"POST","/admin/resolve-refund",pendingFields).is(200),"manual refund retry is idempotent");
         ok(row("SELECT occupancy_id FROM slot_lock WHERE booking_id=?",pendingRefund)==null,"manual refund releases slot");
         sql("UPDATE `user` SET role='USER' WHERE user_id=?",other);
+        ok(a.request(booking,"POST","/orders",orderFields).is(200),"reserve again after verified refund");
+        long asynchronous=Long.parseLong(row("SELECT MAX(booking_id) id FROM booking WHERE user_id=?",owner).get("id").toString());
+        ok(a.request(booking,"POST","/pay",Map.of("booking_id",""+asynchronous)).is(200),"pay asynchronous-refund order");
+        ok(a.request(booking,"POST","/refund",Map.of("booking_id",""+asynchronous,"simulation_outcome","PROCESSING")).is(200),"refund waits for simulated callback");
+        var simulatedNow=LocalDateTime.now(ZoneId.of("Asia/Shanghai")).plusMinutes(2);
+        tx(c->{booking.completeDueRefund(c,asynchronous,simulatedNow);booking.completeDueRefund(c,asynchronous,simulatedNow);return null;});
+        ok(row("SELECT booking_id FROM refund WHERE booking_id=?",asynchronous)!=null,"simulated callback refunds exactly once");
+        ok(row("SELECT occupancy_id FROM slot_lock WHERE booking_id=?",asynchronous)==null,"simulated callback releases the slot");
         var simultaneous=Map.of("room_id","9102","start_time",tomorrow.plusHours(3).toString(),"end_time",tomorrow.plusHours(4).toString());
         var pool=Executors.newFixedThreadPool(2);
         try {

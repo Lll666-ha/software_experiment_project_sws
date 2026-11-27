@@ -32,6 +32,8 @@ public final class ModuleContracts {
         Optional<BookingView> findBooking(Connection transaction, long bookingId)
                 throws SQLException;
 
+        void completeDueRefund(Connection transaction,long bookingId,LocalDateTime now) throws SQLException;
+
         // 返回 false 表示订单不存在，或当前状态不符合 expectedStatus。
         boolean beginUsage(Connection transaction, long bookingId, BookingStatus expectedStatus)
                 throws SQLException;

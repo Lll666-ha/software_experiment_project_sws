@@ -486,7 +486,7 @@ document.addEventListener('submit',async event=>{
             const impact=unavailable
                 ? '此状态将阻止新预约。'+affected.order_count+' 笔有效预约继续保留。' : '房间可接受新预约，实际空闲时段以订单校验为准。';
             showModal('确认调整房间状态',`<p class="notice">${e(room.room_name)} · ${e(label(data.listing_status))}
-                · ${e(label(data.maintenance_status))}。${impact}</p><form id="room-status-confirm">
+                · ${e(label(data.maintenance_status))}。${e(impact)}</p>${affected?.orders.map(order=>'<p>#'+e(order.booking_id)+' · '+e(dateText(order.start_time))+' · '+e(label(order.booking_status))+'</p>').join('')||''}<form id="room-status-confirm">
                 ${Object.entries(data).map(([key,value])=>`<input type="hidden" name="${e(key)}" value="${e(value)}">`).join('')}
                 <div class="form-actions"><button type="button" class="btn" data-action="room-status" data-id="${e(room.room_id)}">返回</button>
                 <button class="btn primary">确认更新</button></div></form>`);

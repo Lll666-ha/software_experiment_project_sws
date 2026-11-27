@@ -30,6 +30,13 @@ jobs:
           distribution: temurin
           java-version: '17'
           cache: maven
+      - name: Wait for MySQL over TCP
+        run: |
+          for attempt in $(seq 1 30); do
+            if mysql --connect-timeout=2 -h 127.0.0.1 -u root -e "SELECT 1" >/dev/null 2>&1; then exit 0; fi
+            sleep 2
+          done
+          mysql --connect-timeout=2 -h 127.0.0.1 -u root -e "SELECT 1"
       - name: Create isolated schema and check repeatable migration
         run: |
           for script in db/init.sql db/prepare-legacy-account-rooms.sql db/account-rooms.sql db/booking-rules.sql db/usage-feedback.sql db/migrate-unified-fields.sql db/migrate-unified-fields.sql db/notifications.sql db/notifications.sql db/room-details.sql db/room-details.sql db/lifecycle-details.sql db/lifecycle-details.sql; do

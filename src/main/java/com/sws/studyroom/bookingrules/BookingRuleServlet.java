@@ -386,17 +386,28 @@ public class BookingRuleServlet extends HttpServlet implements BookingAccess {
     }
 
     private String resolveRefund(Connection c, long actor,long bookingId, LocalDateTime now) throws SQLException {
+        return settleRefund(c,actor,bookingId,now);
+    }
+
+    @Override
+    public void completeDueRefund(Connection c,long bookingId,LocalDateTime now) throws SQLException {
+        settleRefund(c,null,bookingId,now);
+    }
+
+    private String settleRefund(Connection c,Long actor,long bookingId,LocalDateTime now) throws SQLException {
         var booking = findBooking(c,bookingId).orElseThrow(()->new IllegalArgumentException("找不到订单"));
         Sql.one(c,"SELECT user_id FROM `user` WHERE user_id=? FOR UPDATE",booking.userId());
         Sql.one(c,"SELECT room_id FROM room WHERE room_id=? FOR UPDATE",booking.roomId());
         Sql.one(c,"SELECT booking_id FROM booking WHERE booking_id=? FOR UPDATE",bookingId);
-        var request = Sql.one(c,"SELECT amount,status FROM simulated_refund_request WHERE booking_id=? FOR UPDATE",bookingId);
+        var request = Sql.one(c,"SELECT amount,status,requested_at FROM simulated_refund_request WHERE booking_id=? FOR UPDATE",bookingId);
         require(request!=null,"无此退款申请");
         if ("SUCCEEDED".equals(request.get("status"))) return "退款已完成";
+        if (actor==null && (!"PROCESSING".equals(request.get("status")) || now.isBefore(
+                LocalDateTime.parse(request.get("requested_at").toString().replace(' ','T')).plusSeconds(60)))) return "退款等待处理";
         require(findBooking(c,bookingId).orElseThrow().bookingStatus()==BookingStatus.CANCELLED,"订单状态已变化");
         Sql.update(c,"UPDATE simulated_refund_request SET attempts=attempts+1 WHERE booking_id=?",bookingId);
         String result = completeRefund(c, bookingId, (BigDecimal)request.get("amount"), now);
-        audit(c,actor,"REFUND_RESOLVED",bookingId,null,now);
+        if(actor!=null)audit(c,actor,"REFUND_RESOLVED",bookingId,null,now);
         com.sws.studyroom.common.Messages.send(c,booking.userId(),"booking:"+bookingId,"REFUND_RESOLVED",
                 "退款已完成","订单 #"+bookingId+" 的模拟退款已完成，房间时段已释放。",now);
         return result;
