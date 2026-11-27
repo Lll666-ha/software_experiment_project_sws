@@ -35,6 +35,8 @@ jobs:
           for script in db/init.sql db/account-rooms.sql db/booking-rules.sql db/usage-feedback.sql db/migrate-unified-fields.sql db/migrate-unified-fields.sql; do
             mysql --default-character-set=utf8mb4 -h 127.0.0.1 -u root < "$script"
           done
+      - name: Check legacy database migration preserves records
+        run: python3 scripts/check-migration.py
       - run: mvn --batch-mode clean verify
       - name: Run real MySQL integration checks
         run: |

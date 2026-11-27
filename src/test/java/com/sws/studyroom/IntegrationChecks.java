@@ -115,6 +115,27 @@ public final class IntegrationChecks {
         ok(a.request(booking,"POST","/pay",Map.of("booking_id",""+order)).is(200),"simulated payment");
         ok(a.request(booking,"POST","/refund",Map.of("booking_id",""+order)).is(200),"simulated refund");
         ok(row("SELECT occupancy_id FROM slot_lock WHERE booking_id=?",order)==null,"refund releases occupancy");
+        var simultaneous=Map.of("room_id","9102","start_time",tomorrow.plusHours(3).toString(),"end_time",tomorrow.plusHours(4).toString());
+        var pool=Executors.newFixedThreadPool(2);
+        try {
+            var first=pool.submit(()->a.request(booking,"POST","/orders",simultaneous));
+            var second=pool.submit(()->b.request(booking,"POST","/orders",simultaneous));
+            int left=first.get().status,right=second.get().status;
+            ok((left==200&&right==409)||(left==409&&right==200),"concurrent room reservation has exactly one winner");
+            var winning=row("SELECT booking_id,user_id FROM slot_lock WHERE room_id=9102 AND slot_start=?",tomorrow.plusHours(3));
+            Client winner=Long.parseLong(winning.get("user_id").toString())==owner?a:b;
+            ok(winner.request(booking,"POST","/cancel",Map.of("booking_id",winning.get("booking_id").toString())).is(200),"cancel concurrent winner releases lock");
+        } finally { pool.shutdownNow(); }
+        long leftEdge=fixture(owner,NOW.plusMinutes(15),NOW.plusMinutes(75),"PENDING_CHECKIN");
+        tx(c->fixed.checkIn(c,leftEdge,owner));tx(c->fixed.finish(c,leftEdge,owner));
+        ok(true,"checkin includes start minus 15 minutes");
+        long rightEdge=fixture(owner,NOW.minusMinutes(15),NOW.plusMinutes(45),"PENDING_CHECKIN");
+        tx(c->{fixed.expire(c,rightEdge);return null;});
+        ok("PENDING_CHECKIN".equals(row("SELECT booking_status FROM booking WHERE booking_id=?",rightEdge).get("booking_status")),"timeout does not fire at the inclusive right boundary");
+        tx(c->fixed.checkIn(c,rightEdge,owner));tx(c->fixed.finish(c,rightEdge,owner));
+        ok(true,"checkin includes start plus 15 minutes");
+        long tooEarly=fixture(owner,NOW.plusMinutes(16),NOW.plusMinutes(76),"PENDING_CHECKIN");
+        failure(409,c->fixed.checkIn(c,tooEarly,owner),"checkin rejects before left boundary");
         long live=fixture(owner,NOW,NOW.plusHours(1),"PENDING_CHECKIN");
         failure(403,c->fixed.checkIn(c,live,other),"reject foreign checkin");
         tx(c->fixed.checkIn(c,live,owner));tx(c->fixed.checkIn(c,live,owner));
@@ -129,6 +150,10 @@ public final class IntegrationChecks {
         failure(403,c->fixed.review(c,live,other,5,5,"foreign"),"reject foreign review");
         tx(c->fixed.review(c,live,owner,5,4,"含\"引号\"、换行\n和中文"));tx(c->fixed.review(c,live,owner,5,4,"again"));
         ok(((Number)row("SELECT COUNT(*) n FROM review WHERE booking_id=?",live).get("n")).intValue()==1,"one review per booking");
+        sql("UPDATE `usage` SET actual_end_time=? WHERE booking_id=?",NOW.minusHours(24),leftEdge);
+        tx(c->fixed.review(c,leftEdge,owner,5,5,"边界"));ok(true,"review includes 24-hour deadline");
+        sql("UPDATE `usage` SET actual_end_time=? WHERE booking_id=?",NOW.minusHours(24).minusSeconds(1),rightEdge);
+        failure(409,c->fixed.review(c,rightEdge,owner,5,5,"过期"),"review rejects after 24-hour deadline");
         long noShow=fixture(owner,NOW.minusHours(2),NOW.minusHours(1),"PENDING_CHECKIN");
         tx(c->{fixed.expire(c,noShow);return null;});tx(c->{fixed.expire(c,noShow);return null;});
         ok(tx(c->fixed.findScore(c,owner))==290,"timeout deducts once");

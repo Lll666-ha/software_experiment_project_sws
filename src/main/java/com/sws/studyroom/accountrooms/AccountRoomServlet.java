@@ -225,6 +225,15 @@ public class AccountRoomServlet extends HttpServlet implements ModuleContracts.R
         if (!HOURS.matcher(hours).matches()) throw new IllegalArgumentException("开放时间格式应为 HH:mm-HH:mm");
         if (!java.time.LocalTime.parse(hours.substring(0,5)).isBefore(java.time.LocalTime.parse(hours.substring(6)))) throw new IllegalArgumentException("开放时间必须早于关闭时间");
         Long manager = identity.role() == SessionIdentity.Role.ROOM_ADMIN ? identity.userId() : optionalLong(r.getParameter("manager_user_id"));
+        if (manager != null) {
+            try (var p=c.prepareStatement("SELECT role FROM `user` WHERE user_id=? AND account_status='ACTIVE'")) {
+                p.setLong(1,manager);
+                try(var rows=p.executeQuery()) {
+                    if(!rows.next() || !Set.of("ROOM_ADMIN","SUPER_ADMIN").contains(rows.getString(1)))
+                        throw new IllegalArgumentException("负责人必须是可用的管理员账号");
+                }
+            }
+        }
         if (id == 0) {
             try (PreparedStatement p = c.prepareStatement(
                     "INSERT INTO room(room_name,location,capacity,opening_hours,manager_user_id) VALUES (?,?,?,?,?)",

@@ -1,21 +1,7 @@
--- 只在本地预约测试库运行。正式账号及房间模块接入前使用。
+-- Isolated course-test fixtures. Run the real module schema first.
 USE studyroom;
-CREATE TABLE IF NOT EXISTS user (
-    user_id BIGINT PRIMARY KEY,
-    account_status VARCHAR(24) NOT NULL DEFAULT 'NORMAL',
-    credit_score INT NOT NULL DEFAULT 300,
-    credit_suspended_until DATETIME NULL
-) ENGINE=InnoDB;
-CREATE TABLE IF NOT EXISTS room (
-    room_id BIGINT PRIMARY KEY,
-    listing_status VARCHAR(24) NOT NULL,
-    maintenance_status VARCHAR(24) NOT NULL,
-    opening_hours VARCHAR(24) NOT NULL
-) ENGINE=InnoDB;
-INSERT IGNORE INTO user (user_id) VALUES (9001), (9002), (9003);
-INSERT IGNORE INTO room VALUES
-    (9101, 'LISTED', 'NORMAL', '08:00-22:00'),
-    (9102, 'LISTED', 'NORMAL', '08:00-22:00');
-
-CREATE TABLE IF NOT EXISTS booking_fixture_credit (event_id VARCHAR(70) PRIMARY KEY, user_id BIGINT NOT NULL) ENGINE=InnoDB;
-
+INSERT IGNORE INTO `user`(user_id,username,password_salt,password_hash,role,account_status) VALUES
+(9001,'booking_test_9001','0123456789abcdef0123456789abcdef','dd52b37acee881c52c0db04262516309c0ecdea5873568c9b99af0e1696fb480','USER','ACTIVE'),
+(9002,'booking_test_9002','0123456789abcdef0123456789abcdef','dd52b37acee881c52c0db04262516309c0ecdea5873568c9b99af0e1696fb480','USER','ACTIVE'),
+(9003,'booking_test_9003','0123456789abcdef0123456789abcdef','dd52b37acee881c52c0db04262516309c0ecdea5873568c9b99af0e1696fb480','USER','ACTIVE');
+CREATE TABLE IF NOT EXISTS booking_fixture_credit (event_id VARCHAR(70) PRIMARY KEY,user_id BIGINT NOT NULL) ENGINE=InnoDB;
