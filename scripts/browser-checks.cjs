@@ -21,12 +21,14 @@ const check = (condition, name) => { assert.ok(condition, name); console.log('PA
     check(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), 'desktop has no horizontal overflow');
     await page.locator('#header-auth [data-action=login]').click();
     await page.getByRole('button', { name: '注册账号', exact: true }).click();
+    const registerForm = page.locator('#auth-form[data-mode=register]');
+    await registerForm.waitFor();
     const suffix = Date.now().toString();
     const username = 'web_ci_' + suffix;
-    await page.locator('#auth-form [name=username]').fill(username);
-    await page.locator('#auth-form [name=phone]').fill('136' + suffix.slice(-8));
-    await page.locator('#auth-form [name=password]').fill('Browser@123456');
-    check(await page.locator('#auth-form').evaluate(form => form.checkValidity()), 'registration inputs satisfy the form');
+    await registerForm.locator('[name=username]').fill(username);
+    await registerForm.locator('[name=phone]').fill('136' + suffix.slice(-8));
+    await registerForm.locator('[name=password]').fill('Browser@123456');
+    check(await registerForm.evaluate(form => form.checkValidity()), 'registration inputs satisfy the form');
     const [registration] = await Promise.all([
       page.waitForResponse(response => response.url().endsWith('/api/account-rooms/register')),
       page.getByRole('button', { name: '注册并开始使用' }).click()
