@@ -256,3 +256,18 @@
 历史信用流水缺少的 requested_delta / score_after 保留NULL，不能根据当前信用分伪造历史快照。旧 usage 示例数据可能关联不存在的订单，须人工核对来源；新建库不再插入这些孤立记录。迁移脚本不删除任何历史记录。
 
 `local-test/booking-login.jsp` 仅保留作历史测试材料，不放进 webapp、不打入WAR；正式登录通过账号模块。
+
+## 补充业务字段
+
+旧库执行 `db/lifecycle-details.sql` 后使用新版 WAR。
+
+| 范围 | 接口或数据表 | 字段及行为 |
+| --- | --- | --- |
+| 联系方式 | account-rooms/register/code、register、password-reset | `contact`、`code`、`password_confirm`；邮箱保存在 `account_email.email` |
+| 登录控制 | account-rooms/login | `account_login_guard.failures`、`locked_until`；五次失败锁定 15 分钟 |
+| 房间调整 | account-rooms/admin/rooms/impact | `room_id`、`order_count`、`orders` |
+| 时段预览 | booking-rules/preview | `date`、`room_id`、`blocked_hours`、`remaining_hours`、`max_booking_hours` |
+| 模拟流程 | booking-rules/pay、refund，usage-feedback/checkin | `simulation_outcome`；成功 `SUCCESS`、失败 `FAILED`，退款支持 `PROCESSING`，支付接口支持迟到到账补偿 `LATE_SUCCESS` |
+| 退款核对与释放 | `simulated_refund_request`、`booking_outcome` | `request_no`、`status`、`reason`、`attempts`、`release_reason`、`released_at` |
+| 评价和申诉附件 | usage-feedback/review、appeal、attachment | 写入表单使用 `attachments`，读取使用 `attachment_id`；申诉仅提交者和有管理权限的账号可下载 |
+| 信用与规则 | `rule_details`、`administrative_action` | 最大单次时长、两档退款比例、履约及评价加分、超时使用及脏乱扣分、管理员操作记录 |

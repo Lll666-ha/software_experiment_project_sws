@@ -1,6 +1,7 @@
 /* Runs only in CI against the isolated MySQL/Tomcat instance. */
 const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
 const fs = require('node:fs');
+const { execFileSync } = require('node:child_process');
 const assert = require('node:assert/strict');
 const output = 'ui-verification';
 const base = process.env.SWS_BROWSER_URL || 'http://127.0.0.1:8080/studyroom/';
@@ -26,8 +27,14 @@ const check = (condition, name) => { assert.ok(condition, name); console.log('PA
     const suffix = Date.now().toString();
     const username = 'web_ci_' + suffix;
     await registerForm.locator('[name=username]').fill(username);
-    await registerForm.locator('[name=phone]').fill('136' + suffix.slice(-8));
+    await registerForm.locator('[name=contact]').fill('136' + suffix.slice(-8));
     await registerForm.locator('[name=password]').fill('Browser@123456');
+    await registerForm.locator('[name=password_confirm]').fill('Browser@123456');
+    const [codeResponse] = await Promise.all([
+      page.waitForResponse(response => response.url().endsWith('/register/code')),
+      registerForm.locator('[data-action=register-code]').click()
+    ]);
+    await registerForm.locator('[name=code]').fill((await codeResponse.json()).demo_code);
     check(await registerForm.evaluate(form => form.checkValidity()), 'registration inputs satisfy the form');
     const [registration] = await Promise.all([
       page.waitForResponse(response => response.url().endsWith('/api/account-rooms/register')),
@@ -90,6 +97,30 @@ const check = (condition, name) => { assert.ok(condition, name); console.log('PA
     await page.locator('[data-view=credit]').click();
     await page.locator('.credit-score').waitFor();
     check((await page.locator('.credit-score').innerText()).includes('300'), 'credit page reads actual initial score');
+    // Seed a just-finished order in the isolated CI database to test the review window.
+    const identity = await (await page.request.get(new URL('api/account-rooms/session',base).href)).json();
+    assert.match(String(identity.user_id), /^\d+$/);
+    const bookingId = execFileSync('mysql', ['-h','127.0.0.1','-u','root','-N','studyroom','-e',`
+      SET @now=TIMESTAMPADD(HOUR,8,UTC_TIMESTAMP());
+      INSERT INTO booking(user_id,room_id,start_time,end_time,total_amount,booking_status,rule_version_id,pay_deadline)
+      VALUES (${identity.user_id},9101,@now-INTERVAL 2 HOUR,@now-INTERVAL 1 HOUR,10,'FINISHED',1,@now-INTERVAL 3 HOUR);
+      SET @booking=LAST_INSERT_ID();
+      INSERT INTO \`usage\`(booking_id,sign_in_time,actual_end_time,door_open_result)
+      VALUES (@booking,@now-INTERVAL 2 HOUR,@now-INTERVAL 1 HOUR,'SUCCESS');
+      SELECT @booking;
+    `], { encoding:'utf8' }).trim();
+    const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aR1sAAAAASUVORK5CYII=','base64');
+    const reviewUpload = await page.request.post(new URL('api/usage-feedback/review',base).href, {
+      headers:{'X-CSRF-Token':(await (await page.request.get(new URL('api/account-rooms/token',base).href)).json()).csrf},
+      multipart:{booking_id:bookingId,score_1:'5',score_2:'5',comment:'浏览器上传验证',
+        attachments:{name:'review.png',mimeType:'image/png',buffer:png}}
+    });
+    assert.equal(reviewUpload.status(),200,await reviewUpload.text());
+    const history=await (await page.request.get(new URL('api/usage-feedback/room-review-history?room_id=9101',base).href)).json();
+    const picture=history.data.items.find(item=>item.comment==='浏览器上传验证').attachments[0];
+    const download=await page.request.get(new URL('api/usage-feedback/attachment?attachment_id='+picture.attachment_id,base).href);
+    assert.equal(download.status(),200,await download.text());
+    check((await download.body()).equals(png),'review image is stored and downloaded unchanged');
     await page.locator('[data-view=feedback]').click();
     await page.getByRole('button', { name: '上报故障' }).click();
     await page.locator('#fault-form [name=room_id]').fill('9101');

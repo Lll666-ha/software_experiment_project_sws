@@ -3,6 +3,7 @@ package com.sws.studyroom.bookingrules;
 import com.sws.studyroom.common.Database;
 import com.sws.studyroom.common.ModuleContracts.*;
 import com.sws.studyroom.common.SessionIdentity;
+import com.sws.studyroom.common.Sql;
 import jakarta.servlet.annotation.WebServlet;
 import jakarta.servlet.http.*;
 import java.io.IOException;
@@ -41,7 +42,7 @@ public class BookingRuleServlet extends HttpServlet implements BookingAccess {
             return;
         }
         String path = req.getPathInfo();
-        if ("/order-data".equals(path) || "/rule-data".equals(path)) res.setContentType("application/json;charset=UTF-8");
+        if ("/order-data".equals(path) || "/rule-data".equals(path) || "/admin/refunds".equals(path) || "/preview".equals(path)) res.setContentType("application/json;charset=UTF-8");
         boolean admin = path != null && path.startsWith("/admin/");
         if (admin && identity.role() != SessionIdentity.Role.SUPER_ADMIN) {
             res.setStatus(403);
@@ -102,7 +103,8 @@ public class BookingRuleServlet extends HttpServlet implements BookingAccess {
             }
             case "/orders" -> orders(c, user);
             case "/order-data" -> com.sws.studyroom.common.Json.encode(com.sws.studyroom.common.Sql.rows(c,
-                    "SELECT b.*,r.room_name,p.pay_amount,f.refund_amount,u.actual_end_time,"
+                    "SELECT b.*,r.room_name,p.pay_amount,f.refund_amount,u.actual_end_time,u.door_open_result,"
+                    + "o.release_reason,o.released_at,rr.status AS refund_state,rr.reason AS refund_reason,rr.request_no,"
                     + "TIMESTAMPADD(HOUR,rv.review_window_hours,u.actual_end_time) AS review_deadline,"
                     + "CASE WHEN v.booking_id IS NOT NULL THEN 'SUBMITTED' "
                     + "WHEN b.booking_status='FINISHED' AND ? BETWEEN u.actual_end_time AND "
@@ -110,9 +112,16 @@ public class BookingRuleServlet extends HttpServlet implements BookingAccess {
                     + "FROM booking b JOIN room r USING(room_id) JOIN rule_version rv USING(rule_version_id) "
                     + "LEFT JOIN payment p USING(booking_id) LEFT JOIN refund f USING(booking_id) "
                     + "LEFT JOIN `usage` u USING(booking_id) LEFT JOIN review v USING(booking_id) "
+                    + "LEFT JOIN booking_outcome o USING(booking_id) LEFT JOIN simulated_refund_request rr USING(booking_id) "
                     + "WHERE b.user_id=? ORDER BY b.booking_id DESC LIMIT 100", now(), user));
-            case "/rule-data" -> com.sws.studyroom.common.Json.encode(com.sws.studyroom.common.Sql.one(c,
-                    "SELECT * FROM rule_version ORDER BY rule_version_id DESC LIMIT 1"));
+            case "/admin/refunds" -> com.sws.studyroom.common.Json.encode(Sql.rows(c, """
+                    SELECT rr.booking_id,rr.request_no,rr.amount,rr.status,rr.reason,rr.requested_at,r.room_name
+                    FROM simulated_refund_request rr JOIN booking b USING(booking_id) JOIN room r USING(room_id)
+                    WHERE rr.status IN ('FAILED','PROCESSING')
+                    ORDER BY rr.requested_at,rr.booking_id LIMIT 100
+                    """));
+            case "/rule-data" -> com.sws.studyroom.common.Json.encode(ruleDetails(c, false));
+            case "/preview" -> com.sws.studyroom.common.Json.encode(preview(c,r,user,now()));
             case "/quote" -> {
                 BookingView order = owned(c, number(r, "booking_id"), user);
                 require(order.bookingStatus() == BookingStatus.PENDING_CHECKIN, "订单当前不可退款");
@@ -134,29 +143,38 @@ public class BookingRuleServlet extends HttpServlet implements BookingAccess {
                 try (var p=query(c,"SELECT booking_id FROM booking WHERE booking_id=? FOR UPDATE",initial.bookingId());var rows=p.executeQuery()) { rows.next(); }
                 BookingView order=owned(c,initial.bookingId(),user);
                 yield switch (path) {
-                    case "/pay" -> pay(c, order, now);
+                    case "/pay" -> pay(c, order, now, simulationOutcome(r, false));
                     case "/cancel" -> {
                         require(release(c, order.bookingId(), BookingStatus.PENDING_PAYMENT,
                                 ReleaseReason.UNPAID_CANCELLED, ""), "订单已处理");
                         yield "已取消，时段已释放";
                     }
-                    default -> refund(c, order, now);
+                    default -> refund(c, order, now, simulationOutcome(r, true));
                 };
             }
+            case "/admin/resolve-refund" -> resolveRefund(c,user,number(r,"booking_id"),now);
             case "/admin/rules" -> {
                 int days = integer(r, "advance_days", 1, 7);
                 int slots = integer(r, "daily_slots", 1, 24);
                 int percent = integer(r, "refund_percent", 0, 100);
                 BigDecimal price = new BigDecimal(parameter(r, "hourly_price")).setScale(2, java.math.RoundingMode.HALF_UP);
                 require(price.signum() >= 0 && price.compareTo(new BigDecimal("10000")) <= 0, "价格不合法");
-                var current = com.sws.studyroom.common.Sql.one(c, "SELECT * FROM rule_version ORDER BY rule_version_id DESC LIMIT 1 FOR UPDATE");
+                var current = ruleDetails(c, true);
+                int farPercent = optionalInteger(r,current,"refund_early_percent",0,100);
+                require(farPercent >= percent,"提前退款比例不能低于临近退款比例");
                 if (r.getParameter("rule_version_id") != null)
                     require(number(r,"rule_version_id") == Long.parseLong(current.get("rule_version_id").toString()), "规则已更新，请刷新后重试");
-                update(c, "INSERT INTO rule_version(advance_days,daily_slots,hourly_price,refund_percent,checkin_early_minutes,checkin_late_minutes,timeout_deduct,early_release_deduct,credit_suspend_days,review_window_hours) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                long version = Sql.insert(c, "INSERT INTO rule_version(advance_days,daily_slots,hourly_price,refund_percent,checkin_early_minutes,checkin_late_minutes,timeout_deduct,early_release_deduct,credit_suspend_days,review_window_hours) VALUES (?,?,?,?,?,?,?,?,?,?)",
                         days, slots, price, percent,
                         optionalInteger(r,current,"checkin_early_minutes",0,60), optionalInteger(r,current,"checkin_late_minutes",0,60),
                         optionalInteger(r,current,"timeout_deduct",0,300),optionalInteger(r,current,"early_release_deduct",0,300),
                         optionalInteger(r,current,"credit_suspend_days",3,7),optionalInteger(r,current,"review_window_hours",1,168));
+                Sql.update(c, "INSERT INTO rule_details(rule_version_id,max_booking_hours,refund_cutoff_hours,refund_early_percent,fulfillment_bonus,review_bonus,overstay_deduct,untidy_deduct) VALUES (?,?,?,?,?,?,?,?)",version,
+                        optionalInteger(r,current,"max_booking_hours",1,24),
+                        optionalInteger(r,current,"refund_cutoff_hours",1,168),farPercent,
+                        optionalInteger(r,current,"fulfillment_bonus",0,300),optionalInteger(r,current,"review_bonus",0,300),
+                        optionalInteger(r,current,"overstay_deduct",0,300),optionalInteger(r,current,"untidy_deduct",0,300));
+                audit(c,user,"RULE_PUBLISHED",version,null,now);
                 yield "规则已保存，新订单使用新规则";
             }
             case "/admin/freeze" -> {
@@ -166,6 +184,7 @@ public class BookingRuleServlet extends HttpServlet implements BookingAccess {
                 String source = action.equals("freeze") ? "ACTIVE" : "DISABLED";
                 require(update(c, "UPDATE user SET account_status=? WHERE user_id=? AND account_status=?",
                         target, number(r, "user_id"), source) == 1, "用户不存在或状态不匹配");
+                audit(c,user,action.equals("freeze")?"ACCOUNT_FROZEN":"ACCOUNT_UNFROZEN",number(r,"user_id"),null,now);
                 yield "用户状态已更新";
             }
             case "/admin/credit" -> {
@@ -177,10 +196,34 @@ public class BookingRuleServlet extends HttpServlet implements BookingAccess {
                 require(event.length() <= 60, "事件编号过长");
                 boolean changed = credit.applyChange(c, number(r, "user_id"), "admin:" + event,
                         integer(r, "delta", -300, 300), parameter(r, "reason"));
+                if (changed) audit(c,user,"CREDIT_ADJUSTED",number(r,"user_id"),parameter(r,"reason"),now);
                 yield changed ? "信用分已调整" : "该事件已处理";
             }
             default -> throw new IllegalArgumentException("未知操作");
         };
+    }
+
+    private Object preview(Connection c,HttpServletRequest r,long user,LocalDateTime now) throws SQLException {
+        long room = number(r,"room_id");
+        var date = LocalDate.parse(parameter(r,"date"));
+        Rule rule = rule(c,null);
+        require(!date.isBefore(now.toLocalDate()) && !date.isAfter(now.toLocalDate().plusDays(rule.days())), "日期超出预约范围");
+        var resource = Sql.one(c,"SELECT room_id FROM room WHERE room_id=? AND listing_status='LISTED' AND maintenance_status='NORMAL'",room);
+        require(resource!=null,"房间当前不可预约");
+        var occupied = Sql.rows(c,"""
+                SELECT s.slot_start,s.room_id,s.user_id
+                FROM slot_lock s JOIN booking b USING(booking_id)
+                WHERE s.slot_start>=? AND s.slot_start<? AND (s.room_id=? OR s.user_id=?)
+                    AND (b.booking_status<>'PENDING_PAYMENT' OR b.pay_deadline>?)
+                ORDER BY s.slot_start
+                """,date.atStartOfDay(),date.plusDays(1).atStartOfDay(),room,user,now);
+        var blocked = new java.util.LinkedHashSet<String>();
+        int used = 0;
+        for (var slot : occupied) {
+            blocked.add(slot.get("slot_start").toString().substring(11,16));
+            if (Long.parseLong(slot.get("user_id").toString())==user) used++;
+        }
+        return java.util.Map.of("blocked_hours",blocked,"remaining_hours",Math.max(0,rule.slots()-used),"max_booking_hours",rule.maxHours());
     }
 
     private String create(Connection c, HttpServletRequest r, long user, LocalDateTime now) throws SQLException {
@@ -193,7 +236,7 @@ public class BookingRuleServlet extends HttpServlet implements BookingAccess {
                 && start.toLocalDate().equals(end.minusNanos(1).toLocalDate())
                 && start.equals(start.truncatedTo(java.time.temporal.ChronoUnit.HOURS))
                 && end.equals(end.truncatedTo(java.time.temporal.ChronoUnit.HOURS))
-                && slots > 0 && slots <= rule.slots(), "请选择规则范围内的整点时段");
+                && slots > 0 && slots <= Math.min(rule.slots(),rule.maxHours()), "请选择规则范围内的整点时段");
         lockEligibleUser(c, user, now);
         expirePending(c, user);
         try (var p = query(c, "SELECT listing_status, maintenance_status, opening_hours FROM room WHERE room_id=? FOR UPDATE", room);
@@ -232,12 +275,12 @@ public class BookingRuleServlet extends HttpServlet implements BookingAccess {
     }
 
     private void lockEligibleUser(Connection c, long user, LocalDateTime now) throws SQLException {
-        try (var p = query(c, "SELECT account_status,credit_score,credit_suspended_until FROM user WHERE user_id=? FOR UPDATE", user);
+        try (var p = query(c, "SELECT account_status,credit_suspended_until FROM user WHERE user_id=? FOR UPDATE", user);
              var row = p.executeQuery()) {
             require(row.next(), "用户不存在");
             String status = row.getString(1);
-            Timestamp suspended = row.getTimestamp(3);
-            require("ACTIVE".equals(status) && row.getInt(2) > 0
+            Timestamp suspended = row.getTimestamp(2);
+            require("ACTIVE".equals(status)
                     && (suspended == null || !suspended.toLocalDateTime().isAfter(now)), "当前账号无法预约");
         }
     }
@@ -253,7 +296,16 @@ public class BookingRuleServlet extends HttpServlet implements BookingAccess {
         }
     }
 
-    private String pay(Connection c, BookingView order, LocalDateTime now) throws SQLException {
+    private static String simulationOutcome(HttpServletRequest request, boolean refund) {
+        String result = request.getParameter("simulation_outcome");
+        if (result == null || result.isBlank()) return "SUCCESS";
+        require(result.equals("SUCCESS") || result.equals("FAILED") || (refund && result.equals("PROCESSING")) || (!refund && result.equals("LATE_SUCCESS")),
+                "无效的模拟结果");
+        return result;
+    }
+
+    private String pay(Connection c, BookingView order, LocalDateTime now, String result) throws SQLException {
+        if ("LATE_SUCCESS".equals(result)) return compensateLatePayment(c,order,now);
         require(order.bookingStatus() == BookingStatus.PENDING_PAYMENT, "订单当前不可支付");
         try (var p = query(c, "SELECT pay_deadline FROM booking WHERE booking_id=?", order.bookingId());
              var row = p.executeQuery()) {
@@ -263,6 +315,11 @@ public class BookingRuleServlet extends HttpServlet implements BookingAccess {
                 return "支付已超时，订单已取消";
             }
         }
+        if ("FAILED".equals(result)) {
+            require(release(c, order.bookingId(), BookingStatus.PENDING_PAYMENT, ReleaseReason.PAYMENT_FAILED, ""),
+                    "订单已处理");
+            return "模拟支付失败，订单已取消，时段已释放";
+        }
         require(changeStatus(c, order.bookingId(), BookingStatus.PENDING_PAYMENT, BookingStatus.PENDING_CHECKIN),
                 "订单已处理");
         update(c, "INSERT INTO payment(booking_id,pay_amount,paid_at) SELECT booking_id,total_amount,? FROM booking WHERE booking_id=?",
@@ -270,9 +327,39 @@ public class BookingRuleServlet extends HttpServlet implements BookingAccess {
         return "模拟支付成功，等待签到";
     }
 
+    private String compensateLatePayment(Connection c,BookingView order,LocalDateTime now) throws SQLException {
+        long id = order.bookingId();
+        if (order.bookingStatus()==BookingStatus.PENDING_PAYMENT) {
+            var deadline=Sql.one(c,"SELECT pay_deadline FROM booking WHERE booking_id=?",id);
+            require(!now.isBefore(LocalDateTime.parse(deadline.get("pay_deadline").toString().replace(' ','T'))),"支付仍在有效期内");
+            require(release(c,id,BookingStatus.PENDING_PAYMENT,ReleaseReason.PAYMENT_TIMEOUT,""),"订单状态已变化");
+        } else {
+            require(order.bookingStatus()==BookingStatus.CANCELLED,"仅取消的未支付订单可做迟到支付补偿");
+            var outcome=Sql.one(c,"SELECT release_reason FROM booking_outcome WHERE booking_id=?",id);
+            require(outcome!=null && java.util.Set.of("PAYMENT_FAILED","PAYMENT_TIMEOUT","UNPAID_CANCELLED")
+                    .contains(outcome.get("release_reason")),"订单没有可补偿的支付取消记录");
+        }
+        if (Sql.one(c,"SELECT booking_id FROM payment WHERE booking_id=?",id)!=null) {
+            require(Sql.one(c,"SELECT booking_id FROM simulated_refund_request WHERE booking_id=? AND request_no=?",id,"SIM-LATE-"+id)!=null,
+                    "支付已存在");
+            return "迟到支付已补偿退款";
+        }
+        var amount=Sql.one(c,"SELECT total_amount FROM booking WHERE booking_id=?",id).get("total_amount");
+        update(c,"INSERT INTO payment(booking_id,pay_amount,paid_at) VALUES (?,?,?)",id,amount,now);
+        update(c,"INSERT INTO refund(booking_id,refund_amount,refunded_at) VALUES (?,?,?)",id,amount,now);
+        Sql.update(c,"""
+                INSERT INTO simulated_refund_request(booking_id,request_no,amount,status,reason,requested_at,updated_at)
+                VALUES (?,?,?,'SUCCEEDED','迟到支付全额补偿',?,?)
+                """,id,"SIM-LATE-"+id,amount,now,now);
+        com.sws.studyroom.common.Messages.send(c,order.userId(),"booking:"+id,"LATE_PAYMENT_REFUNDED",
+                "迟到支付已退款","订单 #"+id+" 的模拟付款在取消后到账，已全额退回。",now);
+        return "迟到支付已全额补偿退款，预约保持取消";
+    }
+
     private BigDecimal refundAmount(Connection c, BookingView order, LocalDateTime now) throws SQLException {
         require(now.isBefore(order.startTime()), "预约已开始，无法退款");
-        int percent = now.plusHours(24).isAfter(order.startTime()) ? rule(c, order.ruleVersionId()).refundPercent() : 100;
+        Rule rule = rule(c, order.ruleVersionId());
+        int percent = now.plusHours(rule.refundCutoff()).isAfter(order.startTime()) ? rule.refundPercent() : rule.earlyRefundPercent();
         try (var p = query(c, "SELECT pay_amount FROM payment WHERE booking_id=?", order.bookingId());
              var rows = p.executeQuery()) {
             require(rows.next(), "未找到付款记录");
@@ -281,12 +368,55 @@ public class BookingRuleServlet extends HttpServlet implements BookingAccess {
         }
     }
 
-    private String refund(Connection c, BookingView order, LocalDateTime now) throws SQLException {
+    private String refund(Connection c, BookingView order, LocalDateTime now, String result) throws SQLException {
         require(order.bookingStatus() == BookingStatus.PENDING_CHECKIN, "订单当前不可退款");
         BigDecimal amount = refundAmount(c, order, now);
         require(changeStatus(c, order.bookingId(), BookingStatus.PENDING_CHECKIN, BookingStatus.CANCELLED), "订单已处理");
-        update(c, "INSERT INTO refund(booking_id,refund_amount,refunded_at) VALUES (?,?,?)", order.bookingId(), amount, now);
-        release(c, order.bookingId(), BookingStatus.CANCELLED, ReleaseReason.REFUND_SUCCEEDED, "");
+        Sql.update(c, """
+                INSERT INTO simulated_refund_request(booking_id,request_no,amount,status,reason,requested_at,updated_at)
+                VALUES (?,?,?,'PROCESSING',NULL,?,?)
+                """, order.bookingId(), "SIM-REFUND-"+order.bookingId(), amount, now, now);
+        if ("FAILED".equals(result)) {
+            Sql.update(c,"UPDATE simulated_refund_request SET status='FAILED',reason=?,updated_at=? WHERE booking_id=?",
+                    "模拟渠道退款失败，等待管理员处理",now,order.bookingId());
+            return "退款失败，已转人工处理，时段仍保留";
+        }
+        if ("PROCESSING".equals(result)) return "退款处理中，时段仍保留";
+        return completeRefund(c, order.bookingId(), amount, now);
+    }
+
+    private String resolveRefund(Connection c, long actor,long bookingId, LocalDateTime now) throws SQLException {
+        return settleRefund(c,actor,bookingId,now);
+    }
+
+    @Override
+    public void completeDueRefund(Connection c,long bookingId,LocalDateTime now) throws SQLException {
+        settleRefund(c,null,bookingId,now);
+    }
+
+    private String settleRefund(Connection c,Long actor,long bookingId,LocalDateTime now) throws SQLException {
+        var booking = findBooking(c,bookingId).orElseThrow(()->new IllegalArgumentException("找不到订单"));
+        Sql.one(c,"SELECT user_id FROM `user` WHERE user_id=? FOR UPDATE",booking.userId());
+        Sql.one(c,"SELECT room_id FROM room WHERE room_id=? FOR UPDATE",booking.roomId());
+        Sql.one(c,"SELECT booking_id FROM booking WHERE booking_id=? FOR UPDATE",bookingId);
+        var request = Sql.one(c,"SELECT amount,status,requested_at FROM simulated_refund_request WHERE booking_id=? FOR UPDATE",bookingId);
+        require(request!=null,"无此退款申请");
+        if ("SUCCEEDED".equals(request.get("status"))) return "退款已完成";
+        if (actor==null && (!"PROCESSING".equals(request.get("status")) || now.isBefore(
+                LocalDateTime.parse(request.get("requested_at").toString().replace(' ','T')).plusSeconds(60)))) return "退款等待处理";
+        require(findBooking(c,bookingId).orElseThrow().bookingStatus()==BookingStatus.CANCELLED,"订单状态已变化");
+        Sql.update(c,"UPDATE simulated_refund_request SET attempts=attempts+1 WHERE booking_id=?",bookingId);
+        String result = completeRefund(c, bookingId, (BigDecimal)request.get("amount"), now);
+        if(actor!=null)audit(c,actor,"REFUND_RESOLVED",bookingId,null,now);
+        com.sws.studyroom.common.Messages.send(c,booking.userId(),"booking:"+bookingId,"REFUND_RESOLVED",
+                "退款已完成","订单 #"+bookingId+" 的模拟退款已完成，房间时段已释放。",now);
+        return result;
+    }
+
+    private String completeRefund(Connection c,long bookingId,BigDecimal amount,LocalDateTime now) throws SQLException {
+        update(c,"INSERT INTO refund(booking_id,refund_amount,refunded_at) VALUES (?,?,?)",bookingId,amount,now);
+        release(c,bookingId,BookingStatus.CANCELLED,ReleaseReason.REFUND_SUCCEEDED,"");
+        Sql.update(c,"UPDATE simulated_refund_request SET status='SUCCEEDED',reason=NULL,updated_at=? WHERE booking_id=?",now,bookingId);
         return "模拟退款成功，退回 " + amount + " 元";
     }
 
@@ -310,20 +440,28 @@ public class BookingRuleServlet extends HttpServlet implements BookingAccess {
     public boolean release(Connection c, long id, BookingStatus expected, ReleaseReason reason, String eventId)
             throws SQLException {
         BookingStatus allowed = switch (reason) {
-            case UNPAID_CANCELLED, PAYMENT_TIMEOUT -> BookingStatus.PENDING_PAYMENT;
+            case UNPAID_CANCELLED, PAYMENT_TIMEOUT, PAYMENT_FAILED -> BookingStatus.PENDING_PAYMENT;
             case NO_SHOW -> BookingStatus.PENDING_CHECKIN;
             case FINISHED_EARLY, ENDED -> BookingStatus.IN_USE;
             case REFUND_SUCCEEDED -> BookingStatus.CANCELLED;
         };
         if (expected != allowed) return false;
         if (reason == ReleaseReason.REFUND_SUCCEEDED) {
-            return update(c, "DELETE s FROM slot_lock s JOIN booking b USING (booking_id) JOIN refund f USING (booking_id) WHERE s.booking_id=? AND b.booking_status=?",
+            boolean released = update(c, "DELETE s FROM slot_lock s JOIN booking b USING (booking_id) JOIN refund f USING (booking_id) WHERE s.booking_id=? AND b.booking_status=?",
                     id, expected.name()) > 0;
+            if (released) recordRelease(c,id,reason);
+            return released;
         }
         BookingStatus next = expected == BookingStatus.IN_USE ? BookingStatus.FINISHED : BookingStatus.CANCELLED;
         if (!changeStatus(c, id, expected, next)) return false;
         update(c, "DELETE FROM slot_lock WHERE booking_id=?", id);
+        recordRelease(c,id,reason);
         return true;
+    }
+
+    private void recordRelease(Connection c,long id,ReleaseReason reason) throws SQLException {
+        Sql.update(c,"INSERT INTO booking_outcome(booking_id,release_reason,released_at) VALUES (?,?,?)",
+                id,reason.name(),now());
     }
 
     private boolean changeStatus(Connection c, long id, BookingStatus expected, BookingStatus next) throws SQLException {
@@ -365,17 +503,39 @@ public class BookingRuleServlet extends HttpServlet implements BookingAccess {
         }
     }
 
-    private record Rule(long id, int days, int slots, BigDecimal price, int refundPercent) {}
+    private static final String RULE_QUERY = """
+            SELECT v.*,COALESCE(d.max_booking_hours,v.daily_slots) AS max_booking_hours,
+                COALESCE(d.refund_cutoff_hours,24) AS refund_cutoff_hours,
+                COALESCE(d.refund_early_percent,100) AS refund_early_percent,
+                COALESCE(d.fulfillment_bonus,2) AS fulfillment_bonus,
+                COALESCE(d.review_bonus,1) AS review_bonus,
+                COALESCE(d.overstay_deduct,10) AS overstay_deduct,
+                COALESCE(d.untidy_deduct,10) AS untidy_deduct
+            FROM rule_version v LEFT JOIN rule_details d USING(rule_version_id)
+            """;
+
+    private java.util.Map<String,Object> ruleDetails(Connection c, boolean lock) throws SQLException {
+        return Sql.one(c,RULE_QUERY+" ORDER BY rule_version_id DESC LIMIT 1"+(lock?" FOR UPDATE":""));
+    }
+
+    private record Rule(long id, int days, int slots, BigDecimal price, int refundPercent,
+                        int maxHours, int refundCutoff, int earlyRefundPercent) {}
 
     private Rule rule(Connection c, Long id) throws SQLException {
         try (var p = id == null
-                ? query(c, "SELECT * FROM rule_version ORDER BY rule_version_id DESC LIMIT 1")
-                : query(c, "SELECT * FROM rule_version WHERE rule_version_id=?", id);
+                ? query(c, RULE_QUERY + " ORDER BY rule_version_id DESC LIMIT 1")
+                : query(c, RULE_QUERY + " WHERE v.rule_version_id=?", id);
              var row = p.executeQuery()) {
             if (!row.next()) throw new SQLException("缺少预约规则");
             return new Rule(row.getLong("rule_version_id"), row.getInt("advance_days"), row.getInt("daily_slots"),
-                    row.getBigDecimal("hourly_price"), row.getInt("refund_percent"));
+                    row.getBigDecimal("hourly_price"), row.getInt("refund_percent"),row.getInt("max_booking_hours"),
+                    row.getInt("refund_cutoff_hours"),row.getInt("refund_early_percent"));
         }
+    }
+
+    private void audit(Connection c,long actor,String action,long target,String note,LocalDateTime now) throws SQLException {
+        Sql.update(c,"INSERT INTO administrative_action(actor_user_id,action_type,target_id,note,created_at) VALUES (?,?,?,?,?)",
+                actor,action,target,note,now);
     }
 
     private static LocalDateTime now() { return LocalDateTime.now(ZONE); }

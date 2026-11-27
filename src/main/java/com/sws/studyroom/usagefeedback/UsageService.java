@@ -27,13 +27,16 @@ public final class UsageService implements CreditAccess {
         return bookings.findBooking(c, id).orElseThrow();
     }
     private Map<String, Object> rule(Connection c, BookingView b) throws SQLException {
-        var rule = one(c, "SELECT * FROM rule_version WHERE rule_version_id=?", b.ruleVersionId());
+        var rule = one(c, "SELECT v.*,COALESCE(d.fulfillment_bonus,2) fulfillment_bonus,COALESCE(d.review_bonus,1) review_bonus,COALESCE(d.overstay_deduct,10) overstay_deduct,COALESCE(d.untidy_deduct,10) untidy_deduct FROM rule_version v LEFT JOIN rule_details d USING(rule_version_id) WHERE v.rule_version_id=?", b.ruleVersionId());
         if (rule == null) throw new SQLException("缺少订单规则快照"); return rule;
     }
     private static int value(Map<String, Object> r, String key) { return ((Number)r.get(key)).intValue(); }
     private static long id(Map<String, Object> r, String key) { return Long.parseLong(r.get(key).toString()); }
     private static LocalDateTime time(Object value) { return LocalDateTime.parse(value.toString().replace(' ', 'T')); }
     public Map<String, Object> checkIn(Connection c, long bookingId, long user) throws SQLException {
+        return checkIn(c, bookingId, user, false);
+    }
+    public Map<String, Object> checkIn(Connection c, long bookingId, long user, boolean simulateFailure) throws SQLException {
         var b = lock(c, bookingId, user);
         var previous = one(c, "SELECT * FROM `usage` WHERE booking_id=?", bookingId);
         if (previous != null && previous.get("sign_in_time") != null) {
@@ -45,8 +48,8 @@ public final class UsageService implements CreditAccess {
                 && !now.isAfter(b.startTime().plusMinutes(value(r, "checkin_late_minutes")))
                 && now.isBefore(b.endTime()), 409, "不在允许的签到时间内");
         check(bookings.beginUsage(c, bookingId, BookingStatus.PENDING_CHECKIN), 409, "订单已处理");
-        insert(c, "INSERT INTO `usage`(booking_id,sign_in_time,door_open_result,gate_request_id,door_attempt_count) VALUES (?,?,'SUCCESS',?,1)",
-                bookingId, now, "gate:" + bookingId);
+        insert(c, "INSERT INTO `usage`(booking_id,sign_in_time,door_open_result,gate_request_id,door_attempt_count) VALUES (?,?,?,?,1)",
+                bookingId, now, simulateFailure ? "FAILED" : "SUCCESS", "gate:" + bookingId);
         // The course gate adapter is synchronous and simulated. No network/hardware is called in the transaction.
         return one(c, "SELECT * FROM `usage` WHERE booking_id=?", bookingId);
     }
@@ -73,6 +76,8 @@ public final class UsageService implements CreditAccess {
         update(c, "UPDATE `usage` SET actual_end_time=? WHERE booking_id=?", early ? now : b.endTime(), bookingId);
         if (early && value(r, "early_release_deduct") > 0)
             changeCredit(c, user, "early:" + bookingId, -value(r, "early_release_deduct"), "EARLY_RELEASE", value(r, "credit_suspend_days"));
+        if (!early && "SUCCESS".equals(u.get("door_open_result")))
+            award(c,b,r,"fulfill:","FULFILLED","fulfillment_bonus");
         return one(c, "SELECT * FROM `usage` WHERE booking_id=?", bookingId);
     }
     /** One candidate per transaction; safe against concurrent scans and user actions. */
@@ -93,9 +98,16 @@ public final class UsageService implements CreditAccess {
                         "未签到，房间已释放","订单 #"+bookingId+" 超过签到时限，扣除 "+(old-findScore(c,b.userId()))+" 分。",now);
             }
         } else if (b.bookingStatus() == BookingStatus.IN_USE && !now.isBefore(b.endTime())) {
-            if (bookings.release(c, bookingId, BookingStatus.IN_USE, ReleaseReason.ENDED, "ended:" + bookingId))
+            if (bookings.release(c, bookingId, BookingStatus.IN_USE, ReleaseReason.ENDED, "ended:" + bookingId)) {
                 update(c, "UPDATE `usage` SET actual_end_time=? WHERE booking_id=? AND actual_end_time IS NULL", b.endTime(), bookingId);
+                if (one(c,"SELECT booking_id FROM `usage` WHERE booking_id=? AND door_open_result='SUCCESS'",bookingId)!=null)
+                    award(c,b,r,"fulfill:","FULFILLED","fulfillment_bonus");
+            }
         }
+    }
+    private void award(Connection c,BookingView booking,Map<String,Object> rule,String key,String reason,String field) throws SQLException {
+        int points=value(rule,field);
+        if (points>0) changeCredit(c,booking.userId(),key+booking.bookingId(),points,reason,value(rule,"credit_suspend_days"));
     }
     @Override public int findScore(Connection c, long user) throws SQLException {
         var row = one(c, "SELECT credit_score FROM `user` WHERE user_id=?", user);
@@ -116,7 +128,7 @@ public final class UsageService implements CreditAccess {
         }
         int old = value(row, "credit_score"), score = Math.max(0, Math.min(300, old + delta));
         update(c, "UPDATE `user` SET credit_score=? WHERE user_id=?", score, user);
-        if (old > 0 && score == 0)
+        if (delta < 0 && score == 0)
             update(c, "UPDATE `user` SET credit_suspended_until=GREATEST(COALESCE(credit_suspended_until,?),?) WHERE user_id=?",
                     now().plusDays(suspendDays), now().plusDays(suspendDays), user);
         insert(c, "INSERT INTO credit_ledger(user_id,delta_score,requested_delta,score_after,reason,created_at,event_id) VALUES (?,?,?,?,?,?,?)",
@@ -131,6 +143,9 @@ public final class UsageService implements CreditAccess {
         return row;
     }
     public Map<String, Object> review(Connection c, long bookingId, long user, int score1, int score2, String comment) throws SQLException {
+        return review(c,bookingId,user,score1,score2,comment,List.of());
+    }
+    Map<String,Object> review(Connection c,long bookingId, long user, int score1, int score2, String comment,List<FeedbackAttachments.Upload> uploads) throws SQLException {
         var b = lock(c, bookingId, user);
         check(b.bookingStatus() == BookingStatus.FINISHED, 409, "仅已结束的本人订单可以评价");
         check(score1 >= 1 && score1 <= 5 && score2 >= 1 && score2 <= 5 && comment.length() <= 500, 400, "评分需为1至5，评价最多500字");
@@ -139,8 +154,11 @@ public final class UsageService implements CreditAccess {
         var usage = one(c, "SELECT actual_end_time FROM `usage` WHERE booking_id=?", bookingId);
         check(usage != null && usage.get("actual_end_time") != null, 409, "缺少实际结束记录");
         var end = time(usage.get("actual_end_time"));
-        check(!now().isBefore(end) && !now().isAfter(end.plusHours(value(rule(c,b), "review_window_hours"))), 409, "已超过评价期限");
-        insert(c, "INSERT INTO review(booking_id,user_id,score_1,score_2,comment,created_at) VALUES (?,?,?,?,?,?)", bookingId,user,score1,score2,comment,now());
+        var rule = rule(c,b);
+        check(!now().isBefore(end) && !now().isAfter(end.plusHours(value(rule, "review_window_hours"))), 409, "已超过评价期限");
+        long reviewId = insert(c, "INSERT INTO review(booking_id,user_id,score_1,score_2,comment,created_at) VALUES (?,?,?,?,?,?)", bookingId,user,score1,score2,comment,now());
+        FeedbackAttachments.save(c,reviewId,false,uploads);
+        award(c,b,rule,"review:","REVIEW_SUBMITTED","review_bonus");
         return one(c, "SELECT * FROM review WHERE booking_id=?", bookingId);
     }
     public Map<String, Object> fault(Connection c, long room, long user, String description) throws SQLException {
@@ -154,6 +172,9 @@ public final class UsageService implements CreditAccess {
         return one(c, "SELECT * FROM fault WHERE fault_id=?", fault);
     }
     public Map<String, Object> appeal(Connection c, long bookingId, long violation, long user, String reason) throws SQLException {
+        return appeal(c,bookingId,violation,user,reason,List.of());
+    }
+    Map<String,Object> appeal(Connection c,long bookingId, long violation, long user, String reason,List<FeedbackAttachments.Upload> uploads) throws SQLException {
         lock(c, bookingId, user);
         check(!reason.isBlank() && reason.length() <= 500, 400, "申诉理由需为1至500字");
         var v = one(c, "SELECT * FROM violation WHERE violation_id=? AND booking_id=? AND user_id=?", violation,bookingId,user);
@@ -161,6 +182,7 @@ public final class UsageService implements CreditAccess {
         var old = one(c, "SELECT * FROM appeal WHERE booking_id=? AND appeal_status='PENDING' ORDER BY appeal_id LIMIT 1", bookingId);
         if (old != null) return old;
         long result = insert(c, "INSERT INTO appeal(booking_id,user_id,violation_id,appeal_reason,appeal_status,created_at) VALUES (?,?,?,?,'PENDING',?)", bookingId,user,violation,reason,now());
+        FeedbackAttachments.save(c,result,true,uploads);
         return one(c,"SELECT * FROM appeal WHERE appeal_id=?",result);
     }
     private void manageRoom(Connection c, long room, SessionIdentity actor) throws SQLException {
@@ -169,6 +191,26 @@ public final class UsageService implements CreditAccess {
         check(r != null, 404, "房间不存在");
         check(actor.role() == SessionIdentity.Role.SUPER_ADMIN || r.get("manager_user_id") != null
                 && id(r,"manager_user_id") == actor.userId(), 403, "不在房间管理范围内");
+    }
+    public Map<String,Object> recordViolation(Connection c,long bookingId,SessionIdentity actor,String type,String evidence) throws SQLException {
+        check(Set.of("OVERSTAY","UNTIDY").contains(type) && !evidence.isBlank() && evidence.length()<=500,400,"请选择违约类型并填写佐证说明");
+        check(actor.role()!=SessionIdentity.Role.USER,403,"需要管理员权限");
+        var b=lock(c,bookingId,null);
+        manageRoom(c,b.roomId(),actor);
+        check(b.bookingStatus()==BookingStatus.FINISHED,409,"仅已结束的使用订单可以登记此类违约");
+        var previous=one(c,"SELECT * FROM violation WHERE booking_id=? AND violation_type=? ORDER BY violation_id LIMIT 1",bookingId,type);
+        if(previous!=null)return previous;
+        var rule=rule(c,b);
+        int points=value(rule,type.equals("OVERSTAY")?"overstay_deduct":"untidy_deduct");
+        int before=findScore(c,b.userId());
+        changeCredit(c,b.userId(),"violation:"+bookingId+":"+type,-points,type,value(rule,"credit_suspend_days"));
+        int deducted=before-findScore(c,b.userId());
+        long id=insert(c,"INSERT INTO violation(booking_id,user_id,violation_type,credit_deduct,is_revoked,created_at) VALUES (?,?,?,?,0,?)",bookingId,b.userId(),type,deducted,now());
+        update(c,"INSERT INTO administrative_action(actor_user_id,action_type,target_id,note,created_at) VALUES (?,?,?,?,?)",
+                actor.userId(),"VIOLATION_RECORDED",id,evidence,now());
+        com.sws.studyroom.common.Messages.send(c,b.userId(),"violation:"+id,"VIOLATION_RECORDED","新增预约违约记录",
+                "订单 #"+bookingId+" 登记"+(type.equals("OVERSTAY")?"超时使用":"使用后脏乱")+"，扣除 "+deducted+" 分。"+evidence,now());
+        return one(c,"SELECT * FROM violation WHERE violation_id=?",id);
     }
     public Map<String, Object> processAppeal(Connection c, long appealId, SessionIdentity actor, String decision, String opinion) throws SQLException {
         check(Set.of("APPROVED","REJECTED").contains(decision) && !opinion.isBlank() && opinion.length() <= 500, 400, "请填写处理结论和意见");
@@ -180,8 +222,8 @@ public final class UsageService implements CreditAccess {
         if (decision.equals("APPROVED")) {
             var v = one(c,"SELECT * FROM violation WHERE violation_id=? FOR UPDATE",id(a,"violation_id"));
             if (value(v,"is_revoked") == 0) {
-                var original = one(c,"SELECT delta_score FROM credit_ledger WHERE user_id=? AND event_id=?",b.userId(),"timeout:"+b.bookingId());
-                if (original != null) changeCredit(c,b.userId(),"appeal:"+id(a,"violation_id"),-value(original,"delta_score"),"APPEAL_RETURN",3);
+                int deducted=value(v,"credit_deduct");
+                if (deducted>0) changeCredit(c,b.userId(),"appeal:"+id(a,"violation_id"),deducted,"APPEAL_RETURN",3);
                 update(c,"UPDATE violation SET is_revoked=1 WHERE violation_id=?",id(a,"violation_id"));
                 // Simulated course refund: return only the remaining paid balance, once, inside this transaction.
                 var paid = one(c,"SELECT pay_amount FROM payment WHERE booking_id=?",b.bookingId());

@@ -12,7 +12,7 @@ public final class ModuleContracts {
     public enum ListingStatus { LISTED, UNLISTED }
     public enum MaintenanceStatus { NORMAL, MAINTENANCE }
     public enum BookingStatus { PENDING_PAYMENT, PENDING_CHECKIN, IN_USE, CANCELLED, FINISHED }
-    public enum ReleaseReason { UNPAID_CANCELLED, PAYMENT_TIMEOUT, REFUND_SUCCEEDED,
+    public enum ReleaseReason { UNPAID_CANCELLED, PAYMENT_TIMEOUT, PAYMENT_FAILED, REFUND_SUCCEEDED,
         NO_SHOW, FINISHED_EARLY, ENDED }
 
     public record RoomView(long roomId, ListingStatus listingStatus,
@@ -31,6 +31,8 @@ public final class ModuleContracts {
     public interface BookingAccess {
         Optional<BookingView> findBooking(Connection transaction, long bookingId)
                 throws SQLException;
+
+        void completeDueRefund(Connection transaction,long bookingId,LocalDateTime now) throws SQLException;
 
         // 返回 false 表示订单不存在，或当前状态不符合 expectedStatus。
         boolean beginUsage(Connection transaction, long bookingId, BookingStatus expectedStatus)

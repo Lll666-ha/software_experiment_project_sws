@@ -1,4 +1,4 @@
-param([string]$BaseUrl = 'http://localhost:8080/studyroom/api/account-rooms')
+﻿param([string]$BaseUrl = 'http://localhost:8080/studyroom/api/account-rooms')
 
 $ErrorActionPreference = 'Stop'
 $webSession = New-Object Microsoft.PowerShell.Commands.WebRequestSession
@@ -19,7 +19,8 @@ if ($rooms.rooms | Where-Object { $_.capacity -lt 6 -or $_.listing_status -ne 'L
     throw 'AR-08 失败：返回了不满足条件的房间'
 }
 
-Invoke-Post '/register' @{ username = $username; phone = $phone; password = $password } | Out-Null
+$code = (Invoke-Post '/register/code' @{ contact = $phone }).demo_code
+Invoke-Post '/register' @{ username = $username; contact = $phone; password = $password; password_confirm = $password; code = $code } | Out-Null
 $identity = Invoke-RestMethod -Uri "$BaseUrl/session" -WebSession $webSession
 if (-not $identity.authenticated -or $identity.role -ne 'USER') { throw 'AR-01 失败：注册后没有普通用户会话' }
 

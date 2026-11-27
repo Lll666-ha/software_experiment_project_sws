@@ -1,6 +1,7 @@
 package com.sws.studyroom.usagefeedback;
 
 import com.sws.studyroom.common.Database;
+import com.sws.studyroom.common.ModuleContracts.BookingAccess;
 import jakarta.servlet.*;
 import jakarta.servlet.annotation.WebListener;
 import java.util.concurrent.*;
@@ -23,6 +24,16 @@ public class LifecycleScheduler implements ServletContextListener {
                     tx.setAutoCommit(false);
                     try{service.expire(tx,Long.parseLong(row.get("booking_id").toString()));tx.commit();}
                     catch(Exception ex){tx.rollback();context.log("订单自动处理失败",ex);}
+                }
+            }
+            var booking=(BookingAccess)context.getAttribute(BookingAccess.class.getName());
+            if(booking==null)return;
+            var refunds=rows(c,"SELECT booking_id FROM simulated_refund_request WHERE status='PROCESSING' AND requested_at<=? ORDER BY requested_at LIMIT 100",service.now().minusSeconds(60));
+            for(var row:refunds){
+                try(var tx=Database.open()){
+                    tx.setAutoCommit(false);
+                    try{booking.completeDueRefund(tx,Long.parseLong(row.get("booking_id").toString()),service.now());tx.commit();}
+                    catch(Exception ex){tx.rollback();context.log("模拟退款回调处理失败",ex);}
                 }
             }
         }catch(Exception ex){context.log("订单扫描失败，请检查数据库与迁移脚本",ex);}
