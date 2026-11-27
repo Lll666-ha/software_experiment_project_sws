@@ -13,19 +13,18 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.security.*;
 import java.sql.*;
+import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.util.*;
 import java.util.regex.Pattern;
 
 @WebServlet(value = "/api/account-rooms/*", loadOnStartup = 1)
 public class AccountRoomServlet extends HttpServlet implements ModuleContracts.RoomAccess {
     private static final Pattern USERNAME = Pattern.compile("[A-Za-z0-9_]{3,32}");
-    private static final Pattern PHONE = Pattern.compile("1[3-9]\\d{9}");
     private static final Pattern HOURS = Pattern.compile("(?:[01]\\d|2[0-3]):[0-5]\\d-(?:[01]\\d|2[0-3]):[0-5]\\d");
     private static final SecureRandom RANDOM = new SecureRandom();
     private static final String CSRF = AccountRoomServlet.class.getName() + ".csrf";
-    private static final String RESET_USER = AccountRoomServlet.class.getName() + ".resetUser";
-    private static final String RESET_CODE = AccountRoomServlet.class.getName() + ".resetCode";
-    private static final String RESET_EXPIRES = AccountRoomServlet.class.getName() + ".resetExpires";
+    private static final int LOGIN_ATTEMPTS = 5;
 
     @Override
     public void init() throws ServletException {
@@ -64,8 +63,8 @@ public class AccountRoomServlet extends HttpServlet implements ModuleContracts.R
                     String body = write ? change(connection, req, path) : read(connection, req, path);
                     connection.commit();
                     if (req.getAttribute("signedIdentity") instanceof SessionIdentity signed) SessionIdentity.signIn(req, signed);
-                    output(res, 200, body);
-                } catch (SQLException | RuntimeException ex) {
+                    output(res, req.getAttribute("loginStatus") instanceof Integer status ? status : 200, body);
+                } catch (SQLException | GeneralSecurityException | RuntimeException ex) {
                     connection.rollback();
                     throw ex;
                 }
@@ -75,7 +74,7 @@ public class AccountRoomServlet extends HttpServlet implements ModuleContracts.R
         } catch (IllegalArgumentException ex) {
             output(res, 400, message(ex.getMessage()));
         } catch (SQLException ex) {
-            if (ex.getErrorCode() == 1062) output(res, 409, message("用户名、手机号或房间已经存在"));
+            if (ex.getErrorCode() == 1062) output(res, 409, message("用户名、联系方式或房间已经存在"));
             else {
                 log("用户与房间模块数据库操作失败", ex);
                 output(res, 500, message("数据库操作失败"));
@@ -89,6 +88,7 @@ public class AccountRoomServlet extends HttpServlet implements ModuleContracts.R
     private String read(Connection c, HttpServletRequest r, String path) throws SQLException {
         return switch (path) {
             case "/rooms" -> rooms(c, r, false);
+            case "/admin/rooms/impact" -> roomImpact(c,r);
             case "/admin/rooms" -> { requireAdmin(r); yield rooms(c, r, true); }
             case "/catalog" -> com.sws.studyroom.common.Json.encode(RoomCatalog.search(c, r, null));
             case "/admin/catalog" -> com.sws.studyroom.common.Json.encode(RoomCatalog.search(c, r, requireAdmin(r)));
@@ -100,6 +100,7 @@ public class AccountRoomServlet extends HttpServlet implements ModuleContracts.R
             throws SQLException, GeneralSecurityException {
         return switch (path) {
             case "/register" -> register(c, r);
+            case "/register/code" -> issueCode(r, "register", contact(r));
             case "/login" -> login(c, r);
             case "/logout" -> { SessionIdentity.signOut(r); yield message("已退出登录"); }
             case "/password-reset/request" -> requestReset(c, r);
@@ -111,74 +112,138 @@ public class AccountRoomServlet extends HttpServlet implements ModuleContracts.R
     }
 
     private String register(Connection c, HttpServletRequest r) throws SQLException, GeneralSecurityException {
-        String username = required(r, "username"), phone = required(r, "phone"), password = required(r, "password");
-        validateUser(username, phone, password);
+        String username = required(r, "username"), password = confirmedPassword(r, "password");
+        var contact = contact(r);
+        if (!USERNAME.matcher(username).matches()) throw new IllegalArgumentException("用户名须为3至32位字母、数字或下划线");
+        ContactCodes.consume(r.getSession(false), "register", contact, required(r, "code"));
         String salt = randomHex(16);
         try (PreparedStatement p = c.prepareStatement(
                 "INSERT INTO `user`(username,phone,password_salt,password_hash,role,account_status) " +
                         "VALUES (?,?,?,?, 'USER','ACTIVE')", Statement.RETURN_GENERATED_KEYS)) {
-            bind(p, username, phone, salt, hash(password, salt));
+            bind(p, username, contact.email() ? null : contact.value(), salt, hash(password, salt));
             p.executeUpdate();
             try (ResultSet keys = p.getGeneratedKeys()) {
                 if (!keys.next()) throw new SQLException("未取得新用户编号");
-                r.setAttribute("signedIdentity", new SessionIdentity(keys.getLong(1), SessionIdentity.Role.USER));
+                long userId = keys.getLong(1);
+                if (contact.email()) {
+                    try (var email = c.prepareStatement("INSERT INTO account_email(user_id,email) VALUES (?,?)")) {
+                        bind(email, userId, contact.value());
+                        email.executeUpdate();
+                    }
+                }
+                r.setAttribute("signedIdentity", new SessionIdentity(userId, SessionIdentity.Role.USER));
             }
         }
         return message("注册成功并已登录");
     }
 
     private String login(Connection c, HttpServletRequest r) throws SQLException, GeneralSecurityException {
-        String username = required(r, "username"), password = required(r, "password");
-        try (PreparedStatement p = c.prepareStatement(
-                "SELECT user_id,password_salt,password_hash,role,account_status FROM `user` WHERE username=?")) {
-            p.setString(1, username);
+        String login = required(r, "username"), password = required(r, "password");
+        if (login.length() > 254 || password.length() > 72)
+            throw new Failure(401, "账号或密码错误");
+        try (PreparedStatement p = c.prepareStatement("""
+                SELECT u.user_id,u.password_salt,u.password_hash,u.role,u.account_status
+                FROM `user` u LEFT JOIN account_email e ON e.user_id=u.user_id
+                WHERE u.username=? OR u.phone=? OR e.email=?
+                ORDER BY (e.email IS NOT NULL AND e.email=? OR u.phone IS NOT NULL AND u.phone=?) DESC,u.user_id
+                LIMIT 1 FOR UPDATE
+                """)) {
+            bind(p, login, login, login, login, login);
             try (ResultSet row = p.executeQuery()) {
-                if (!row.next() || !same(row.getString("password_hash"), hash(password, row.getString("password_salt"))))
-                    throw new Failure(401, "用户名或密码错误");
+                if (!row.next() || row.getString("password_salt") == null)
+                    throw new Failure(401, "账号或密码错误");
+                long user = row.getLong("user_id");
+                var now = LocalDateTime.now(ZoneId.of("Asia/Shanghai"));
+                int failures = 0;
+                try (var guard = c.prepareStatement(
+                        "SELECT failures,locked_until FROM account_login_guard WHERE user_id=?")) {
+                    bind(guard, user);
+                    try (ResultSet state = guard.executeQuery()) {
+                        if (state.next()) {
+                            var until = state.getObject("locked_until", LocalDateTime.class);
+                            if (until != null && until.isAfter(now))
+                                return loginFailure(r, 423, "账号已临时锁定，请在15分钟后重试，或找回密码");
+                            if (until == null) failures = state.getInt("failures");
+                        }
+                    }
+                }
+                if (!same(row.getString("password_hash"), hash(password, row.getString("password_salt")))) {
+                    int remaining = LOGIN_ATTEMPTS - ++failures;
+                    try (var guard = c.prepareStatement("""
+                            INSERT INTO account_login_guard(user_id,failures,locked_until) VALUES (?,?,?)
+                            ON DUPLICATE KEY UPDATE failures=?,locked_until=?
+                            """)) {
+                        var until = remaining == 0 ? now.plusMinutes(15) : null;
+                        bind(guard, user, failures, until, failures, until);
+                        guard.executeUpdate();
+                    }
+                    return remaining == 0
+                            ? loginFailure(r, 423, "尝试次数已用完，账号锁定15分钟")
+                            : loginFailure(r, 401, "账号或密码错误，还可尝试 " + remaining + " 次");
+                }
                 if (!"ACTIVE".equals(row.getString("account_status"))) throw new Failure(403, "账号已停用");
+                clearLoginGuard(c, user);
                 SessionIdentity.Role role;
                 try { role = SessionIdentity.Role.valueOf(row.getString("role")); }
                 catch (IllegalArgumentException ex) { throw new SQLException("用户角色无效", ex); }
-                r.setAttribute("signedIdentity", new SessionIdentity(row.getLong("user_id"), role));
+                r.setAttribute("signedIdentity", new SessionIdentity(user, role));
             }
         }
         return message("登录成功");
     }
 
-    private String requestReset(Connection c, HttpServletRequest r) throws SQLException {
-        long userId;
-        try (PreparedStatement p = c.prepareStatement(
-                "SELECT user_id FROM `user` WHERE username=? AND phone=? AND account_status='ACTIVE'")) {
-            bind(p, required(r, "username"), required(r, "phone"));
-            try (ResultSet row = p.executeQuery()) {
-                if (!row.next()) throw new Failure(404, "用户名与手机号不匹配");
-                userId = row.getLong(1);
+    private static String loginFailure(HttpServletRequest r, int status, String message) {
+        r.setAttribute("loginStatus", status);
+        return message(message);
+    }
+
+    private static void clearLoginGuard(Connection c, long user) throws SQLException {
+        try (var p = c.prepareStatement("DELETE FROM account_login_guard WHERE user_id=?")) {
+            bind(p, user);
+            p.executeUpdate();
+        }
+    }
+
+    private static ContactCodes.Contact contact(HttpServletRequest r) {
+        return ContactCodes.parse(required(r, r.getParameter("contact") == null ? "phone" : "contact"));
+    }
+
+    private static String issueCode(HttpServletRequest r, String purpose, ContactCodes.Contact contact) {
+        String code = ContactCodes.issue(r.getSession(true), purpose, contact);
+        return "{\"message\":\"模拟验证码已生成，5分钟内有效\",\"demo_code\":\"" + code + "\"}";
+    }
+
+    private static long resetUser(Connection c, HttpServletRequest r, ContactCodes.Contact contact, boolean lock) throws SQLException {
+        String query = "SELECT u.user_id FROM `user` u LEFT JOIN account_email e ON e.user_id=u.user_id"
+                + " WHERE u.username=? AND u.account_status='ACTIVE' AND "
+                + (contact.email() ? "e.email=?" : "u.phone=?") + (lock ? " FOR UPDATE" : "");
+        try (var p = c.prepareStatement(query)) {
+            bind(p, required(r, "username"), contact.value());
+            try (var row = p.executeQuery()) {
+                if (!row.next()) throw new Failure(404, "用户名与绑定联系方式不匹配");
+                return row.getLong(1);
             }
         }
-        String code = String.format("%06d", RANDOM.nextInt(1_000_000));
-        HttpSession s = r.getSession(true);
-        s.setAttribute(RESET_USER, userId);
-        s.setAttribute(RESET_CODE, code);
-        s.setAttribute(RESET_EXPIRES, System.currentTimeMillis() + 300_000L);
-        return "{\"message\":\"验证码已生成，5分钟内有效\",\"demo_code\":\"" + code + "\"}";
+    }
+
+    private String requestReset(Connection c, HttpServletRequest r) throws SQLException {
+        var contact = contact(r);
+        resetUser(c, r, contact, false);
+        return issueCode(r, "reset", contact);
     }
 
     private String confirmReset(Connection c, HttpServletRequest r) throws SQLException, GeneralSecurityException {
-        HttpSession s = r.getSession(false);
-        if (s == null || !(s.getAttribute(RESET_USER) instanceof Long userId)
-                || !(s.getAttribute(RESET_CODE) instanceof String code)
-                || !(s.getAttribute(RESET_EXPIRES) instanceof Long expires)
-                || expires < System.currentTimeMillis() || !same(code, required(r, "code")))
-            throw new Failure(400, "验证码错误或已过期");
-        String password = required(r, "new_password");
-        validatePassword(password);
+        var contact = contact(r);
+        String password = confirmedPassword(r, "new_password");
+        long userId = resetUser(c, r, contact, true);
+        ContactCodes.consume(r.getSession(false), "reset", contact, required(r, "code"));
         String salt = randomHex(16);
         try (PreparedStatement p = c.prepareStatement(
                 "UPDATE `user` SET password_salt=?,password_hash=? WHERE user_id=?")) {
             bind(p, salt, hash(password, salt), userId);
-            if (p.executeUpdate() != 1) throw new Failure(404, "用户不存在");
+            p.executeUpdate();
         }
-        s.removeAttribute(RESET_USER); s.removeAttribute(RESET_CODE); s.removeAttribute(RESET_EXPIRES);
+        clearLoginGuard(c, userId);
         return message("密码重置成功");
     }
 
@@ -259,6 +324,24 @@ public class AccountRoomServlet extends HttpServlet implements ModuleContracts.R
         return message("房间修改成功");
     }
 
+    private String roomImpact(Connection c,HttpServletRequest r) throws SQLException {
+        var actor=requireAdmin(r);
+        long room=longNumber(required(r,"room_id"),1,"房间编号");
+        var scoped=com.sws.studyroom.common.Sql.one(c,"SELECT manager_user_id FROM room WHERE room_id=?",room);
+        if(scoped==null || actor.role()==SessionIdentity.Role.ROOM_ADMIN
+                && !Long.toString(actor.userId()).equals(scoped.get("manager_user_id")))
+            throw new Failure(404,"房间不存在或不在管理范围内");
+        var now=LocalDateTime.now(ZoneId.of("Asia/Shanghai"));
+        String query="""
+                FROM booking WHERE room_id=? AND end_time>?
+                AND (booking_status IN ('PENDING_CHECKIN','IN_USE') OR booking_status='PENDING_PAYMENT' AND pay_deadline>?)
+                """;
+        var sql=com.sws.studyroom.common.Sql.one(c,"SELECT COUNT(*) AS order_count "+query,room,now,now);
+        sql.put("orders",com.sws.studyroom.common.Sql.rows(c,"SELECT booking_id,start_time,end_time,booking_status "+query
+                +" ORDER BY start_time LIMIT 10",room,now,now));
+        return com.sws.studyroom.common.Json.encode(sql);
+    }
+
     private String updateStatus(Connection c, HttpServletRequest r) throws SQLException {
         SessionIdentity identity = requireAdmin(r);
         long id = longNumber(required(r, "room_id"), 1, "房间编号");
@@ -301,10 +384,12 @@ public class AccountRoomServlet extends HttpServlet implements ModuleContracts.R
         return SessionIdentity.csrf(r);
     }
 
-    private static void validateUser(String username, String phone, String password) {
-        if (!USERNAME.matcher(username).matches()) throw new IllegalArgumentException("用户名只能包含字母、数字和下划线，长度3至32位");
-        if (!PHONE.matcher(phone).matches()) throw new IllegalArgumentException("手机号格式不正确");
+    private static String confirmedPassword(HttpServletRequest r, String field) {
+        String password = required(r, field);
         validatePassword(password);
+        if (!same(password, required(r, "password_confirm")))
+            throw new IllegalArgumentException("两次输入的密码不一致");
+        return password;
     }
 
     private static void validatePassword(String value) {

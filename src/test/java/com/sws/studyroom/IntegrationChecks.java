@@ -75,6 +75,12 @@ public final class IntegrationChecks {
         });
         boolean is(int expected){if(status!=expected)System.err.println("HTTP "+status+" "+body);return status==expected;}
     }
+    private static Response register(Client client, String name, String contact) throws Exception {
+        var code = client.request(account,"POST","/register/code",Map.of("contact",contact));
+        ok(code.is(200), "issue contact verification code");
+        return client.request(account,"POST","/register",Map.of("username",name,"contact",contact,
+                "password","Test@123456","password_confirm","Test@123456","code",Json.parse(code.body.toString()).get("demo_code")));
+    }
     private static long user(String username)throws SQLException{
         try(var c=Database.open()){return Long.parseLong(one(c,"SELECT user_id FROM `user` WHERE username=?",username).get("user_id").toString());}
     }
@@ -101,9 +107,24 @@ public final class IntegrationChecks {
         Client a=new Client(),b=new Client(),admin=new Client();
         a.request(account,"GET","/token",Map.of());b.request(account,"GET","/token",Map.of());admin.request(account,"GET","/token",Map.of());
         String suffix=Long.toString(System.nanoTime()).replace("-","");String name="ci_"+suffix;
-        ok(a.request(account,"POST","/register",Map.of("username",name,"phone","139"+suffix.substring(suffix.length()-8),"password","Test@123456")).is(200),"registration signs in after commit");
-        long owner=user(name);ok(((Number)row("SELECT credit_score FROM `user` WHERE user_id=?",owner).get("credit_score")).intValue()==300,"initial credit 300");
-        ok(b.request(account,"POST","/register",Map.of("username",name+"b","phone","138"+suffix.substring(suffix.length()-8),"password","Test@123456")).is(200),"second user");long other=user(name+"b");
+        String phone="139"+suffix.substring(suffix.length()-8);
+        String email=name+"@example.test";
+        ok(register(a,name,phone).is(200),"registration signs in after commit");
+        long owner=user(name);
+        ok(((Number)row("SELECT credit_score FROM `user` WHERE user_id=?",owner).get("credit_score")).intValue()==300,"initial credit 300");
+        ok(register(b,name+"b",email).is(200),"email registration");long other=user(name+"b");
+        Client locked=new Client();
+        locked.request(account,"GET","/token",Map.of());
+        for(int attempt=1;attempt<=5;attempt++){
+            var failure=locked.request(account,"POST","/login",Map.of("username",email,"password","Wrong123456"));
+            ok(failure.is(attempt==5?423:401),"persistent login failure "+attempt);
+        }
+        ok(locked.request(account,"POST","/login",Map.of("username",email,"password","Test@123456")).is(423),"locked account rejects correct password");
+        var reset=locked.request(account,"POST","/password-reset/request",Map.of("username",name+"b","contact",email));
+        ok(reset.is(200),"email password recovery code");
+        ok(locked.request(account,"POST","/password-reset/confirm",Map.of("username",name+"b","contact",email,
+                "new_password","Reset@123456","password_confirm","Reset@123456","code",Json.parse(reset.body.toString()).get("demo_code"))).is(200),"reset clears login lock");
+        ok(locked.request(account,"POST","/login",Map.of("username",email,"password","Reset@123456")).is(200),"login by verified email");
         ok(admin.request(account,"POST","/login",Map.of("username","room_admin","password","Admin@123456")).is(200),"seeded administrator login");
         ok(a.request(booking,"POST","/orders",Map.of("csrf","invalid")).is(403),"CSRF rejected");
         var tomorrow=LocalDateTime.now(ZoneId.of("Asia/Shanghai")).toLocalDate().plusDays(1).atTime(10,0);
@@ -115,6 +136,31 @@ public final class IntegrationChecks {
         ok(a.request(booking,"POST","/pay",Map.of("booking_id",""+order)).is(200),"simulated payment");
         ok(a.request(booking,"POST","/refund",Map.of("booking_id",""+order)).is(200),"simulated refund");
         ok(row("SELECT occupancy_id FROM slot_lock WHERE booking_id=?",order)==null,"refund releases occupancy");
+        ok(a.request(booking,"POST","/orders",orderFields).is(200),"reuse released slot");
+        long failedPay=Long.parseLong(row("SELECT MAX(booking_id) id FROM booking WHERE user_id=?",owner).get("id").toString());
+        ok(a.request(booking,"POST","/pay",Map.of("booking_id",""+failedPay,"simulation_outcome","FAILED")).is(200),"simulated payment failure");
+        ok(row("SELECT occupancy_id FROM slot_lock WHERE booking_id=?",failedPay)==null,"failed payment releases slot");
+        ok(row("SELECT release_reason FROM booking_outcome WHERE booking_id=?",failedPay).get("release_reason").equals("PAYMENT_FAILED"),"payment failure reason persisted");
+        var late=Map.of("booking_id",""+failedPay,"simulation_outcome","LATE_SUCCESS");
+        ok(a.request(booking,"POST","/pay",late).is(200),"late payment compensation");
+        ok(a.request(booking,"POST","/pay",late).is(200),"repeated late payment does not duplicate refund");
+        ok(row("SELECT booking_status FROM booking WHERE booking_id=?",failedPay).get("booking_status").equals("CANCELLED"),"late payment never reopens cancelled booking");
+        ok(a.request(booking,"POST","/orders",orderFields).is(200),"reuse failed payment slot");
+        long pendingRefund=Long.parseLong(row("SELECT MAX(booking_id) id FROM booking WHERE user_id=?",owner).get("id").toString());
+        var pendingFields=Map.of("booking_id",""+pendingRefund);
+        ok(a.request(booking,"POST","/pay",pendingFields).is(200),"pay refundable order");
+        ok(a.request(booking,"POST","/refund",Map.of("booking_id",""+pendingRefund,"simulation_outcome","FAILED")).is(200),"failed refund enters manual queue");
+        ok(row("SELECT occupancy_id FROM slot_lock WHERE booking_id=?",pendingRefund)!=null,"failed refund retains slot");
+        ok(admin.request(booking,"POST","/admin/resolve-refund",pendingFields).is(403),"room administrator cannot settle refunds");
+        Client superAdmin=new Client();
+        superAdmin.request(account,"GET","/token",Map.of());
+        sql("UPDATE `user` SET role='SUPER_ADMIN' WHERE user_id=?",other);
+        ok(superAdmin.request(account,"POST","/login",Map.of("username",email,"password","Reset@123456")).is(200),"super administrator login");
+        ok(superAdmin.request(booking,"GET","/admin/refunds",Map.of()).body.toString().contains("SIM-REFUND-"+pendingRefund),"refund appears in supervisor queue");
+        ok(superAdmin.request(booking,"POST","/admin/resolve-refund",pendingFields).is(200),"manual refund succeeds");
+        ok(superAdmin.request(booking,"POST","/admin/resolve-refund",pendingFields).is(200),"manual refund retry is idempotent");
+        ok(row("SELECT occupancy_id FROM slot_lock WHERE booking_id=?",pendingRefund)==null,"manual refund releases slot");
+        sql("UPDATE `user` SET role='USER' WHERE user_id=?",other);
         var simultaneous=Map.of("room_id","9102","start_time",tomorrow.plusHours(3).toString(),"end_time",tomorrow.plusHours(4).toString());
         var pool=Executors.newFixedThreadPool(2);
         try {
@@ -138,12 +184,12 @@ public final class IntegrationChecks {
         failure(409,c->fixed.checkIn(c,tooEarly,owner),"checkin rejects before left boundary");
         long live=fixture(owner,NOW,NOW.plusHours(1),"PENDING_CHECKIN");
         failure(403,c->fixed.checkIn(c,live,other),"reject foreign checkin");
-        tx(c->fixed.checkIn(c,live,owner));tx(c->fixed.checkIn(c,live,owner));
+        ok(tx(c->fixed.checkIn(c,live,owner,true)).get("door_open_result").equals("FAILED"),"simulated gate failure persists");
+        ok(tx(c->fixed.checkIn(c,live,owner)).get("door_open_result").equals("FAILED"),"repeated check-in keeps gate result");
         ok(((Number)row("SELECT COUNT(*) n FROM `usage` WHERE booking_id=?",live).get("n")).intValue()==1,"checkin is idempotent");
         failure(403,c->fixed.finish(c,live,other),"reject foreign finish");
+        ok(tx(c->fixed.retryDoor(c,live,owner)).get("door_open_result").equals("SUCCESS"),"failed door succeeds on retry");
         tx(c->fixed.retryDoor(c,live,owner));
-        ok(((Number)row("SELECT door_attempt_count FROM `usage` WHERE booking_id=?",live).get("door_attempt_count")).intValue()==1,"successful gate retry does not send again");
-        sql("UPDATE `usage` SET door_open_result='FAILED' WHERE booking_id=?",live);tx(c->fixed.retryDoor(c,live,owner));
         ok(((Number)row("SELECT door_attempt_count FROM `usage` WHERE booking_id=?",live).get("door_attempt_count")).intValue()==2,"failed gate can retry");
         tx(c->fixed.finish(c,live,owner));tx(c->fixed.finish(c,live,owner));
         ok("FINISHED".equals(row("SELECT booking_status FROM booking WHERE booking_id=?",live).get("booking_status"))&&row("SELECT occupancy_id FROM slot_lock WHERE booking_id=?",live)==null,"finish changes order and releases slots atomically");

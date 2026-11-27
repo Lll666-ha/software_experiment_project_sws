@@ -26,8 +26,14 @@ const check = (condition, name) => { assert.ok(condition, name); console.log('PA
     const suffix = Date.now().toString();
     const username = 'web_ci_' + suffix;
     await registerForm.locator('[name=username]').fill(username);
-    await registerForm.locator('[name=phone]').fill('136' + suffix.slice(-8));
+    await registerForm.locator('[name=contact]').fill('136' + suffix.slice(-8));
     await registerForm.locator('[name=password]').fill('Browser@123456');
+    await registerForm.locator('[name=password_confirm]').fill('Browser@123456');
+    const [codeResponse] = await Promise.all([
+      page.waitForResponse(response => response.url().endsWith('/register/code')),
+      registerForm.locator('[data-action=register-code]').click()
+    ]);
+    await registerForm.locator('[name=code]').fill((await codeResponse.json()).demo_code);
     check(await registerForm.evaluate(form => form.checkValidity()), 'registration inputs satisfy the form');
     const [registration] = await Promise.all([
       page.waitForResponse(response => response.url().endsWith('/api/account-rooms/register')),

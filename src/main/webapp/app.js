@@ -5,7 +5,7 @@ const $ = (selector, within = document) => within.querySelector(selector);
 const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
 const e = escapeHtml;
 const icon = name => `<svg class="icon" aria-hidden="true"><use href="#i-${name}"/></svg>`;
-const labels = {USER:'普通用户',ROOM_ADMIN:'房间管理员',SUPER_ADMIN:'超级管理员',PENDING_PAYMENT:'待支付',PENDING_CHECKIN:'待签到',IN_USE:'使用中',CANCELLED:'已取消',FINISHED:'已结束',ACTIVE:'正常',DISABLED:'已停用',LISTED:'已上架',UNLISTED:'已下架',NORMAL:'正常',MAINTENANCE:'维护中',PENDING:'待处理',REPAIRING:'维修中',RESOLVED:'已完成',APPROVED:'已通过',REJECTED:'已驳回',TIMEOUT:'超时未签到',EARLY_RELEASE:'提前结束',APPEAL_RETURN:'申诉信用返还',NO_SHOW:'超时未签到'};
+const labels = {USER:'普通用户',ROOM_ADMIN:'房间管理员',SUPER_ADMIN:'超级管理员',PENDING_PAYMENT:'待支付',PENDING_CHECKIN:'待签到',IN_USE:'使用中',CANCELLED:'已取消',FINISHED:'已结束',ACTIVE:'正常',DISABLED:'已停用',LISTED:'已上架',UNLISTED:'已下架',NORMAL:'正常',MAINTENANCE:'维护中',PENDING:'待处理',REPAIRING:'维修中',RESOLVED:'已完成',APPROVED:'已通过',REJECTED:'已驳回',TIMEOUT:'超时未签到',EARLY_RELEASE:'提前结束',APPEAL_RETURN:'申诉信用返还',NO_SHOW:'超时未签到',FULFILLED:'正常履约',REVIEW_SUBMITTED:'提交评价',OVERSTAY:'超时使用',UNTIDY:'使用后脏乱'};
 const label = value => labels[value] || value || '—';
 const badge = status => `<span class="badge ${e(status)}">${e(label(status))}</span>`;
 const money = value => Number(value ?? 0).toFixed(2);
@@ -19,7 +19,8 @@ function button(text, action, extra='', primary=false) { return `<button class="
 async function api(module, path, {method='GET',data,format='json'}={}) {
     const url = new URL(`api/${module}${path}`,base);
     const options={method,credentials:'same-origin',headers:{}};
-    if (method==='POST') { const params=new URLSearchParams(data || {});params.set('csrf',state.csrf);options.body=params; }
+    if (method==='POST' && data instanceof FormData) {options.body=data;options.headers['X-CSRF-Token']=state.csrf;}
+    else if (method==='POST') { const params=new URLSearchParams(data || {});params.set('csrf',state.csrf);options.body=params; }
     else if (data) for (const [key,value] of Object.entries(data)) if(value!==''&&value!=null) url.searchParams.set(key,value);
     const res=await fetch(url,options);const text=await res.text();let result;
     if(format==='text') result=text;else {try {result=JSON.parse(text);}catch {throw new Error(res.status===404?'页面接口暂不可用，请检查部署版本':'暂时无法读取服务端结果，请稍后重试');}}
@@ -212,6 +213,15 @@ async function roomDetails(roomId) {
         ${room.maintenance_status==='NORMAL'?button('预约空间','reserve',id,true):''}</div>`);
 }
 
+function attachmentLinks(items=[]) {
+    if(!items.length)return '';
+    return '<p>'+items.map((item,index)=>{
+        const href=new URL('api/usage-feedback/attachment',base);
+        href.searchParams.set('attachment_id',item.attachment_id);
+        return '<a class="link-button" href="'+e(href.href)+'">'+(item.media_type==='application/pdf'?'PDF':'图片')+' '+(index+1)+'</a>';
+    }).join(' · ')+'</p>';
+}
+
 async function roomReviewHistory(roomId, params = {}) {
     if (!mustLogin()) return;
     const room = state.rooms.find(room=>room.room_id===roomId);
@@ -220,7 +230,7 @@ async function roomReviewHistory(roomId, params = {}) {
     const scores = [['','全部'],...[1,2,3,4,5].map(n=>[n,`${n} 分`])];
     const reviews = data.items.map(review=>`<article class="record">
         <div class="record-head"><strong>整洁度 ${e(review.score_1)} · 设备 ${e(review.score_2)}</strong><small>${e(dateText(review.created_at))}</small></div>
-        ${review.comment?`<p>${e(review.comment)}</p>`:''}</article>`).join('');
+        ${review.comment?`<p>${e(review.comment)}</p>`:''}${attachmentLinks(review.attachments)}</article>`).join('');
     showModal(`${room?.room_name || '研讨间'} · 历史评价`,`<form id="room-review-search" class="form-grid">
         ${filterSelect('score_1','整洁度',scores,params.score_1)}
         ${filterSelect('score_2','设备完好度',scores,params.score_2)}
@@ -238,13 +248,13 @@ function orderCard(o) {
     const id=`data-id="${e(o.booking_id)}"`;let actions='';let note=`房间编号 ${o.room_id} · 预约规则以订单生成时的版本为准`;
     if(o.booking_status==='PENDING_PAYMENT'){actions=button('取消预约','cancel',id)+button('模拟支付','pay',id,true);note=`请在 ${dateText(o.pay_deadline)} 前完成支付`;}
     if(o.booking_status==='PENDING_CHECKIN'){actions=button('查看退款','refund',id)+button('签到开门','checkin',id,true);note='请在允许的签到时间内操作，时间条件由服务端校验';}
-    if(o.booking_status==='IN_USE'){actions=button('重试开门','door',id)+button('结束使用','finish',id,true);note='使用结束后请及时释放空间，并带走个人物品';}
+    if(o.booking_status==='IN_USE'){actions=(o.door_open_result==='FAILED'?button('重试开门','door',id):'')+button('结束使用','finish',id,true);note=o.door_open_result==='FAILED'?'开门失败，请重试或联系房间管理员。':'使用结束后请及时释放空间，并带走个人物品';}
     if(o.booking_status==='FINISHED'){
         if(o.review_state==='OPEN')actions=button('评价空间','review',id,true);
         const reviewStatus={OPEN:`评价截止 ${dateText(o.review_deadline)}`,SUBMITTED:'已提交评价',CLOSED:'评价已关闭'};
         note=o.actual_end_time?`实际结束于 ${dateText(o.actual_end_time)} · ${reviewStatus[o.review_state]||'—'}`:'使用已结束';
     }
-    if(o.booking_status==='CANCELLED'){note=o.refund_amount!=null?`已退款 ¥${money(o.refund_amount)}`:'订单已取消；如有异议，可在信用记录中查看违约并申诉';}
+    if(o.booking_status==='CANCELLED'){note=o.refund_amount!=null?`已退款 ¥${money(o.refund_amount)}`:({FAILED:'退款失败，等待管理员核对',PROCESSING:'退款处理中' }[o.refund_state]||({PAYMENT_FAILED:'支付失败，时段已释放',PAYMENT_TIMEOUT:'支付超时，时段已释放',UNPAID_CANCELLED:'预约已取消，时段已释放',NO_SHOW:'未按时签到，时段已释放'}[o.release_reason]||'订单已取消'));}
     return `<article class="order-card"><div class="order-head"><span class="order-id">预约编号 ${e(o.booking_id)}</span>${badge(o.booking_status)}</div><div class="order-main"><div class="order-room-icon">${icon('room')}</div><div><h3>${e(o.room_name||'研讨间 '+o.room_id)}</h3><p class="order-time">房间 ${e(o.room_id)} · ${e(dateText(o.start_time))} — ${e(String(o.end_time).slice(11,16))}</p></div><div class="order-amount">¥${money(o.total_amount)}<small>${o.pay_amount!=null?'已支付':'应付金额'}</small></div></div><div class="order-end"><p>${e(note)}</p><div class="actions">${actions}</div></div></article>`;
 }
 async function renderCredit() {
@@ -255,7 +265,7 @@ async function renderCredit() {
 }
 async function renderFeedback() {
     const tab=state.feedbackTab;const data=await feedback(tab==='appeals'?'/me/appeals':'/me/faults');
-    const records=data.map(item=>{const isAppeal=tab==='appeals';return `<article class="record"><div class="record-head"><h3>${isAppeal?'预约 '+e(item.booking_id)+' 的申诉':'房间 '+e(item.room_id)+' 的报障'}</h3>${badge(isAppeal?item.appeal_status:item.fault_status)}<small>${e(dateText(item.created_at))}</small></div><p>${e(isAppeal?item.appeal_reason:item.fault_desc)}</p>${item.admin_opinion?`<p><b>处理意见：</b>${e(item.admin_opinion)}</p>`:''}</article>`;}).join('');
+    const records=data.map(item=>{const isAppeal=tab==='appeals';return `<article class="record"><div class="record-head"><h3>${isAppeal?'预约 '+e(item.booking_id)+' 的申诉':'房间 '+e(item.room_id)+' 的报障'}</h3>${badge(isAppeal?item.appeal_status:item.fault_status)}<small>${e(dateText(item.created_at))}</small></div><p>${e(isAppeal?item.appeal_reason:item.fault_desc)}</p>${attachmentLinks(item.attachments)}${item.admin_opinion?`<p><b>处理意见：</b>${e(item.admin_opinion)}</p>`:''}</article>`;}).join('');
     return heading('你的反馈，让空间更好','上报使用中的问题，查看故障处理与申诉进度。',button(`${icon('plus')}上报故障`,'fault','',true))+`<div class="tabs"><button class="tab ${tab==='faults'?'active':''}" data-action="feedback-tab" data-id="faults">我的报障</button><button class="tab ${tab==='appeals'?'active':''}" data-action="feedback-tab" data-id="appeals">我的申诉</button></div><div class="panel">${records||empty(tab==='appeals'?'暂无申诉记录':'暂无报障记录',tab==='appeals'?'如对违约记录有异议，可从信用记录发起申诉。':'如果使用中遇到设备或环境问题，可以在这里反馈。',tab==='appeals'?'<a class="btn" href="#credit">查看信用记录</a>':'')}</div>`;
 }
 async function renderMessages() {
@@ -270,7 +280,7 @@ async function renderMessages() {
 async function renderAdmin() {
     if(state.identity.role==='USER')return heading('管理工作台','')+`<div class="panel">${empty('当前账号无管理权限','请使用管理员账号登录。')}</div>`;
     const superAdmin=state.identity.role==='SUPER_ADMIN';
-    const options=[['rooms','房间管理'],['faults','故障处理'],['appeals','申诉复核'],...(superAdmin?[['rules','规则配置'],['users','信用与账号']]:[])];
+    const options=[['rooms','房间管理'],['faults','故障处理'],['appeals','申诉复核'],['violations','违约登记'],...(superAdmin?[['rules','规则配置'],['refunds','退款核对'],['users','信用与账号']]:[])];
     if(!options.some(([v])=>v===state.adminTab))state.adminTab='rooms';
     let content='';
     if(state.adminTab==='rooms'){
@@ -282,11 +292,17 @@ async function renderAdmin() {
         if(!state.adminRooms.length)content+=empty('暂无匹配房间','请调整筛选条件。');
     }else if(state.adminTab==='faults'||state.adminTab==='appeals'){
         const isAppeal=state.adminTab==='appeals';const data=await feedback(isAppeal?'/admin/appeals':'/admin/faults');state[isAppeal?'appeals':'faults']=data;
-        content=`<div class="card-top"><h2>${isAppeal?'申诉复核':'故障处理'}</h2><small>最近 100 条 · 按管理范围显示</small></div>`+data.map(v=>`<article class="record"><div class="record-head"><h3>${isAppeal?'申诉 '+e(v.appeal_id):'故障 '+e(v.fault_id)}</h3>${badge(isAppeal?v.appeal_status:v.fault_status)}<small>${e(dateText(v.created_at))}</small></div><p>${isAppeal?'预约 '+e(v.booking_id)+' · 用户 '+e(v.user_id):'房间 '+e(v.room_id)+' · 用户 '+e(v.user_id)}<br>${e(isAppeal?v.appeal_reason:v.fault_desc)}</p>${v.admin_opinion?`<p>处理意见：${e(v.admin_opinion)}</p>`:''}${(isAppeal?v.appeal_status==='PENDING':v.fault_status!=='RESOLVED')?`<div class="actions">${button(isAppeal?'复核申诉':'处理故障',isAppeal?'process-appeal':'process-fault',`data-id="${e(isAppeal?v.appeal_id:v.fault_id)}"`,true)}</div>`:''}</article>`).join('');
+        content=`<div class="card-top"><h2>${isAppeal?'申诉复核':'故障处理'}</h2><small>最近 100 条 · 按管理范围显示</small></div>`+data.map(v=>`<article class="record"><div class="record-head"><h3>${isAppeal?'申诉 '+e(v.appeal_id):'故障 '+e(v.fault_id)}</h3>${badge(isAppeal?v.appeal_status:v.fault_status)}<small>${e(dateText(v.created_at))}</small></div><p>${isAppeal?'预约 '+e(v.booking_id)+' · 用户 '+e(v.user_id):'房间 '+e(v.room_id)+' · 用户 '+e(v.user_id)}<br>${e(isAppeal?v.appeal_reason:v.fault_desc)}</p>${attachmentLinks(v.attachments)}${v.admin_opinion?`<p>处理意见：${e(v.admin_opinion)}</p>`:''}${(isAppeal?v.appeal_status==='PENDING':v.fault_status!=='RESOLVED')?`<div class="actions">${button(isAppeal?'复核申诉':'处理故障',isAppeal?'process-appeal':'process-fault',`data-id="${e(isAppeal?v.appeal_id:v.fault_id)}"`,true)}</div>`:''}</article>`).join('');
         if(!data.length)content+=empty('暂无待查看记录','新的报障或申诉会出现在这里。');
+    }else if(state.adminTab==='violations'){
+        content='<div class="card-top"><h2>登记使用违约</h2></div><form id="record-violation" class="form-stack"><label>订单编号<input name="booking_id" inputmode="numeric" pattern="[0-9]+" required></label><label>违约类型<select name="violation_type"><option value="OVERSTAY">超时使用</option><option value="UNTIDY">使用后脏乱</option></select></label><label>佐证说明<textarea name="evidence" maxlength="500" required></textarea></label><div class="form-actions"><button class="btn primary">登记并按规则扣分</button></div></form>';
+    }else if(state.adminTab==='refunds'){
+        const items=await bookings('/admin/refunds',{format:'json'});
+        content='<div class="card-top"><h2>待核对退款</h2></div>'+items.map(item=>`<article class="record"><div class="record-head"><h3>订单 #${e(item.booking_id)} · ${e(item.room_name)}</h3><small>${e(dateText(item.requested_at))}</small></div><p>${e(item.request_no)} · ¥${money(item.amount)}<br>${e(item.reason||'退款处理中')}</p><div class="actions">${button('核对并退款','resolve-refund',`data-id="${e(item.booking_id)}"`,true)}</div></article>`).join('');
+        if(!items.length)content+=empty('暂无待核对退款','');
     }else if(state.adminTab==='rules'){
         await loadRule();const r=state.rule;
-        const definitions=[['advance_days','可提前预约天数',1,7],['daily_slots','单人每日时段上限',1,24],['hourly_price','每小时价格（元）',0,10000],['refund_percent','24小时内退款比例（%）',0,100],['checkin_early_minutes','可提前签到（分钟）',0,60],['checkin_late_minutes','可迟到签到（分钟）',0,60],['timeout_deduct','未签到扣分',0,300],['early_release_deduct','提前结束扣分',0,300],['credit_suspend_days','信用暂停天数',3,7],['review_window_hours','评价窗口（小时）',1,168]];
+        const definitions=[['advance_days','可提前预约天数',1,7],['daily_slots','单人每日时段上限',1,24],['hourly_price','每小时价格（元）',0,10000],['max_booking_hours','单次时长上限（小时）',1,24],['refund_cutoff_hours','退款比例分界（小时前）',1,168],['refund_early_percent','较早退款比例（%）',0,100],['refund_percent','临近开始退款比例（%）',0,100],['fulfillment_bonus','正常履约加分',0,300],['review_bonus','提交评价加分',0,300],['overstay_deduct','超时使用扣分',0,300],['untidy_deduct','使用后脏乱扣分',0,300],['checkin_early_minutes','可提前签到（分钟）',0,60],['checkin_late_minutes','可迟到签到（分钟）',0,60],['timeout_deduct','未签到扣分',0,300],['early_release_deduct','提前结束扣分',0,300],['credit_suspend_days','信用暂停天数',3,7],['review_window_hours','评价窗口（小时）',1,168]];
         content=`<div class="card-top"><h2>预约与使用规则</h2><small>当前版本 ${e(r.rule_version_id)}</small></div><p class="notice">发布后生成新版本，已生成的订单仍按原规则执行。</p><form id="rules-form"><input type="hidden" name="rule_version_id" value="${e(r.rule_version_id)}"><div class="form-grid">${definitions.map(([key,title,min,max])=>`<label>${title}<input type="number" name="${key}" value="${e(r[key])}" min="${min}" max="${max}" step="${key==='hourly_price'?'0.01':'1'}" required></label>`).join('')}</div><div class="form-actions"><button class="btn primary">发布新规则</button></div></form>`;
     }else{
         content=`<div class="card-top"><h2>信用与账号管理</h2></div><form id="user-query" class="toolbar"><input name="user_id" placeholder="输入用户编号" aria-label="用户编号" required pattern="[0-9]+"><button class="btn primary">查询用户</button></form><div id="user-result" aria-live="polite"><p class="muted">查询用户后，可查看信用、冻结或解冻账号，并调整信用分。</p></div>`;
@@ -314,9 +330,15 @@ async function openAuth(tab='login') {
     try { state.csrf=(await account('/token')).csrf; }
     catch(error) { toast(error.message,true);return; }
     const tabs=`<div class="modal-tabs">${[['login','账号登录'],['register','注册账号'],['reset','找回密码']].map(([v,l])=>`<button class="tab ${v===tab?'active':''}" data-action="auth-tab" data-id="${v}">${l}</button>`).join('')}</div>`;
+    const contact = '<label>手机号或邮箱<input name="contact" maxlength="254" required></label>';
+    const code = '<label>验证码<input name="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" required></label>';
+    const password = (name,title) => '<label>'+title+'<input name="'+name+'" type="password" autocomplete="new-password" minlength="8" maxlength="72" required></label>';
+    const confirm = password('password_confirm','确认密码');
+    const username = '<label>用户名<input name="username" autocomplete="username" required></label>';
     let form;
-    if(tab==='reset')form=`<form id="reset-request-form" class="form-stack"><label>用户名<input name="username" autocomplete="username" required></label><label>绑定手机号<input name="phone" type="tel" autocomplete="tel" pattern="1[3-9][0-9]{9}" required></label><button class="btn primary">获取模拟验证码</button></form><div id="reset-code" class="notice" hidden style="margin-top:17px"></div><form id="reset-confirm-form" class="form-stack" style="margin-top:20px"><label>验证码<input name="code" inputmode="numeric" pattern="[0-9]{6}" required></label><label>新密码<input name="new_password" type="password" autocomplete="new-password" minlength="8" maxlength="72" placeholder="8—72位，同时包含字母和数字" required></label><button class="btn">确认重置密码</button></form>`;
-    else form=`<form id="auth-form" class="form-stack" data-mode="${tab}"><label>用户名<input name="username" autocomplete="username" placeholder="3—32位字母、数字或下划线" pattern="[A-Za-z0-9_]{3,32}" required></label>${tab==='register'?'<label>手机号<input name="phone" type="tel" autocomplete="tel" pattern="1[3-9][0-9]{9}" placeholder="用于找回密码" required></label>':''}<label>密码<input name="password" type="password" autocomplete="${tab==='register'?'new-password':'current-password'}" ${tab==='register'?'minlength="8" maxlength="72"':''} placeholder="${tab==='register'?'8—72位，同时包含字母和数字':'请输入密码'}" required></label><button class="btn primary">${tab==='register'?'注册并开始使用':'登录'}</button><p class="form-note">${tab==='register'?'注册成功后将自动登录。':'普通用户与管理员共用此登录入口。'}</p></form>`;
+    if(tab==='reset')form='<form id="reset-request-form" class="form-stack">'+username+contact+'<button class="btn primary">获取模拟验证码</button></form><div id="reset-code" class="notice" hidden></div><form id="reset-confirm-form" class="form-stack" hidden>'+code+password('new_password','新密码')+confirm+'<button class="btn">确认重置密码</button></form>';
+    else if(tab==='register')form='<form id="auth-form" class="form-stack" data-mode="register">'+username+contact+'<button class="btn" type="button" data-action="register-code">获取模拟验证码</button><div id="register-code" class="notice" hidden></div>'+code+password('password','密码（8–72 位，含字母和数字）')+confirm+'<button class="btn primary">注册并开始使用</button></form>';
+    else form='<form id="auth-form" class="form-stack" data-mode="login"><label>用户名、手机号或邮箱<input name="username" autocomplete="username" required></label><label>密码<input name="password" type="password" autocomplete="current-password" required></label><button class="btn primary">登录</button></form>';
     showModal(tab==='register'?'欢迎加入研间':tab==='reset'?'找回你的账户':'欢迎回到研间',tabs+form);
 }
 async function reserve(roomId) {
@@ -327,17 +349,37 @@ async function reserve(roomId) {
     const initialHour=Math.max(first,nextHour)<last?Math.max(first,nextHour):first;
     const selectedDate=Math.max(first,nextHour)<last?localDate:new Date(now.getTime()+86400000).toLocaleDateString('en-CA',{timeZone:'Asia/Shanghai'});
     const selectHours=(name,end=false)=>`<select name="${name}" required>${Array.from({length:Math.max(0,last-first)},(_,i)=>first+i+(end?1:0)).map(n=>`<option value="${String(n).padStart(2,'0')}:00" ${n===initialHour+(end?1:0)?'selected':''}>${String(n).padStart(2,'0')}:00</option>`).join('')}</select>`;
-    showModal('预约研讨空间',`<div class="summary">${icon('room')}<div><h3>${e(room.room_name)}</h3><p>${e(room.location)} · ${e(room.capacity)} 人<br>开放时间 ${e(room.opening_hours)}</p></div></div><form id="reserve-form"><input type="hidden" name="room_id" value="${e(roomId)}"><div class="form-grid"><label class="full">预约日期<input name="date" type="date" min="${localDate}" max="${maxDate.toLocaleDateString('en-CA',{timeZone:'Asia/Shanghai'})}" value="${selectedDate}" required></label><label>开始时间${selectHours('start')}</label><label>结束时间${selectHours('end',true)}</label></div><p class="form-note" style="margin-top:16px">每人每天最多 ${e(state.rule.daily_slots)} 个时段，需选择整点时间。付款期限、冲突与金额均由服务端确定。</p><div class="price-preview"><span>时段费用预估</span><strong id="price-preview">¥${money(state.rule.hourly_price)}</strong></div><div class="form-actions"><button type="button" class="btn" data-action="close-modal">取消</button><button class="btn primary">确认预约</button></div></form>`);
+    showModal('预约研讨空间',`<div class="summary">${icon('room')}<div><h3>${e(room.room_name)}</h3><p>${e(room.location)} · ${e(room.capacity)} 人<br>开放时间 ${e(room.opening_hours)}</p></div></div><form id="reserve-form"><input type="hidden" name="room_id" value="${e(roomId)}"><div class="form-grid"><label class="full">预约日期<input name="date" type="date" min="${localDate}" max="${maxDate.toLocaleDateString('en-CA',{timeZone:'Asia/Shanghai'})}" value="${selectedDate}" required></label><label>开始时间${selectHours('start')}</label><label>结束时间${selectHours('end',true)}</label></div><p class="form-note" style="margin-top:16px">每人每天最多 ${e(state.rule.daily_slots)} 个时段，需选择整点时间。付款期限、冲突与金额均由服务端确定。</p><p id="slot-preview" role="status" class="form-note"></p><div class="price-preview"><span>时段费用预估</span><strong id="price-preview">¥${money(state.rule.hourly_price)}</strong></div><div class="form-actions"><button type="button" class="btn" data-action="close-modal">取消</button><button class="btn primary">确认预约</button></div></form>`);
+    await showSlotPreview($('#reserve-form'));
+}
+async function showSlotPreview(form) {
+    const data=fields(form), panel=form.querySelector('#slot-preview');
+    if(!data.date){panel.textContent='';return;}
+    try {
+        const result=await bookings('/preview',{format:'json',data:{date:data.date,room_id:data.room_id}});
+        if(!form.isConnected||form.elements.date.value!==data.date)return;
+        const blocked=new Set(result.blocked_hours);
+        const hours=[...form.elements.start.options].map(option=>option.value);
+        const overlaps=hours.some(hour=>hour>=data.start&&hour<data.end&&blocked.has(hour));
+        panel.textContent='当日剩余 '+result.remaining_hours+' 小时 · 单次最多 '+result.max_booking_hours+' 小时'
+            +(blocked.size?' · 已占用 '+[...blocked].join('、'):' · 当前无占用')
+            +(overlaps?'。所选时段存在冲突，请另选时间。':'');
+    }catch{
+        if(form.isConnected&&form.elements.date.value===data.date)panel.textContent='暂无法查看时段，请稍后刷新。';
+    }
 }
 async function orderAction(action,id) {
     if(!mustLogin())return;const order=state.orders.find(o=>o.booking_id===id);if(!order)throw new Error('订单信息已变化，请刷新');const summary=`<div class="summary">${icon('calendar')}<div><h3>${e(order.room_name)}</h3><p>${e(dateText(order.start_time))} — ${e(String(order.end_time).slice(11,16))}</p></div></div>`;
     if(action==='review'){
-        showModal('评价这次研讨空间',summary+`<form id="review-form"><input type="hidden" name="booking_id" value="${e(id)}"><div class="form-grid"><label>空间整洁度<select name="score_1">${[5,4,3,2,1].map(v=>`<option>${v}</option>`).join('')}</select></label><label>设备完好度<select name="score_2">${[5,4,3,2,1].map(v=>`<option>${v}</option>`).join('')}</select></label><label class="full">使用感受<textarea name="comment" maxlength="500" placeholder="分享你的使用体验（选填）"></textarea></label></div><p class="rating-note">每项 1—5 分，一单可评价一次，须在评价期限内提交。</p><div class="form-actions"><button class="btn primary">提交评价</button></div></form>`);return;
+        showModal('评价这次研讨空间',summary+`<form id="review-form"><input type="hidden" name="booking_id" value="${e(id)}"><div class="form-grid"><label>空间整洁度<select name="score_1">${[5,4,3,2,1].map(v=>`<option>${v}</option>`).join('')}</select></label><label>设备完好度<select name="score_2">${[5,4,3,2,1].map(v=>`<option>${v}</option>`).join('')}</select></label><label class="full">使用感受<textarea name="comment" maxlength="500" placeholder="分享你的使用体验（选填）"></textarea></label><label class="full">评价图片（选填）<input name="attachments" type="file" accept="image/jpeg,image/png" multiple><small>每张最大 5 MB，最多 6 张。</small></label></div><p class="rating-note">每项 1—5 分，一单可评价一次，须在评价期限内提交。</p><div class="form-actions"><button class="btn primary">提交评价</button></div></form>`);return;
     }
     let description={pay:`将模拟支付 ¥${money(order.total_amount)}，支付成功后即可按规则签到。`,cancel:'取消后将立即释放尚未支付的预约时段。',checkin:'确认你已到达研讨间。签到时间条件由服务端校验，课程门禁将模拟开门。',door:'仅对失败的开门请求重试，不重复签到或变更信用。',finish:'结束后将释放预约空间，你可以在评价期限内分享使用感受。'}[action];
-    if(action==='refund')description=(await bookings('/quote',{data:{booking_id:id}})).trim()+'。确认后执行模拟退款并释放预约时段。';
+    if(action==='refund')description=(await bookings('/quote',{data:{booking_id:id}})).trim()+'。退款成功后释放预约时段。';
+    const simulation=['pay','refund','checkin'].includes(action)
+        ? '<label class="form-stack">模拟结果<select name="simulation_outcome"><option value="SUCCESS">成功</option><option value="FAILED">失败</option>'+(action==='refund'?'<option value="PROCESSING">处理中</option>':'')+'</select></label>'
+        : '';
     const title={pay:'确认模拟支付',cancel:'取消这次预约',checkin:'签到并开门',door:'重试开门',finish:'结束本次使用',refund:'确认退款'}[action];
-    showModal(title,summary+`<p class="notice">${e(description)}</p><form id="order-action-form" data-mode="${action}"><input type="hidden" name="booking_id" value="${e(id)}"><div class="form-actions"><button type="button" class="btn" data-action="close-modal">返回</button><button class="btn primary">${action==='cancel'?'确认取消':'确认操作'}</button></div></form>`);
+    showModal(title,summary+`<p class="notice">${e(description)}</p><form id="order-action-form" data-mode="${action}"><input type="hidden" name="booking_id" value="${e(id)}">${simulation}<div class="form-actions"><button type="button" class="btn" data-action="close-modal">返回</button><button class="btn primary">${action==='cancel'?'确认取消':'确认操作'}</button></div></form>`);
 }
 function faultModal() {
     if(!mustLogin())return;
@@ -345,7 +387,7 @@ function faultModal() {
 }
 function appealModal(id) {
     const v=state.credit?.violations.find(v=>v.violation_id===id);if(!v)throw new Error('请刷新信用记录');
-    showModal('提交违约申诉',`<div class="notice">预约 ${e(v.booking_id)} · ${e(label(v.violation_type))} · 记录扣分 ${e(v.credit_deduct)}</div><form id="appeal-form"><input type="hidden" name="booking_id" value="${e(v.booking_id)}"><input type="hidden" name="violation_id" value="${e(id)}"><div class="form-grid"><label class="full">申诉理由<textarea name="appeal_reason" maxlength="500" placeholder="请说明发生的情况和申请复核的原因。" required></textarea></label></div><div class="form-actions"><button class="btn primary">提交申诉</button></div></form>`);
+    showModal('提交违约申诉',`<div class="notice">预约 ${e(v.booking_id)} · ${e(label(v.violation_type))} · 记录扣分 ${e(v.credit_deduct)}</div><form id="appeal-form"><input type="hidden" name="booking_id" value="${e(v.booking_id)}"><input type="hidden" name="violation_id" value="${e(id)}"><div class="form-grid"><label class="full">申诉理由<textarea name="appeal_reason" maxlength="500" placeholder="请说明发生的情况和申请复核的原因。" required></textarea></label><label class="full">佐证材料（选填）<input name="attachments" type="file" accept="image/jpeg,image/png,application/pdf" multiple><small>图片每张最大 5 MB，PDF 每份最大 10 MB，各最多 6 件。</small></label></div><div class="form-actions"><button class="btn primary">提交申诉</button></div></form>`);
 }
 function editRoom(id) {
     const room=state.adminRooms.find(r=>r.room_id===id)||{};
@@ -371,6 +413,16 @@ document.addEventListener('click',async event=>{
     const node=event.target.closest('[data-action]');if(!node||node.disabled)return;const action=node.dataset.action,id=node.dataset.id;
     try {
         if(action==='login')openAuth();else if(action==='reset')openAuth('reset');else if(action==='auth-tab')openAuth(id);else if(action==='close-modal')closeModal();
+        else if(action==='register-code'){
+            const input=node.form.elements.contact;
+            if(!input.reportValidity())return;
+            node.disabled=true;
+            try {
+                const result=await postAccount('/register/code',{contact:input.value});
+                $('#register-code').hidden=false;
+                $('#register-code').textContent='本次模拟验证码：'+result.demo_code;
+            } finally {node.disabled=false;}
+        }
         else if(action==='refresh')await render();else if(action==='explore')location.hash='rooms';
         else if(action==='reserve')await reserve(id);
         else if(action==='catalog-page'){state.roomFilters={...state.roomFilters,page:id};await render();}
@@ -385,6 +437,7 @@ document.addEventListener('click',async event=>{
         else if(action==='feedback-tab'){state.feedbackTab=id;await render();}
         else if(action==='admin-tab'){state.adminTab=id;await render();}
         else if(action==='fault')faultModal();else if(action==='appeal')appealModal(id);
+        else if(action==='resolve-refund')showModal('核对模拟退款',`<p class="notice">确认完成订单 #${e(id)} 的模拟退款并释放时段。</p><form id="resolve-refund-form"><input type="hidden" name="booking_id" value="${e(id)}"><div class="form-actions"><button class="btn primary">确认完成退款</button></div></form>`);
         else if(action==='room-edit')editRoom(id);else if(action==='room-status')statusRoom(id);
         else if(action==='process-appeal')processRecord('appeal',id);else if(action==='process-fault')processRecord('fault',id);
         else if(action==='logout'){await postAccount('/logout',{});await refreshIdentity();state.orders=[];state.credit=null;location.hash='rooms';await render();toast('已退出登录');}
@@ -409,25 +462,29 @@ document.addEventListener('submit',async event=>{
         if(form.id==='admin-room-search'){state.adminRoomFilters=data;await render();return;}
         if(form.id==='room-review-search'&&state.reviewSearch){await roomReviewHistory(state.reviewSearch.roomId,data);return;}
         if(form.id==='auth-form'){const result=await postAccount('/'+form.dataset.mode,data);await refreshIdentity();closeModal();await render();toast(result.message);return;}
-        if(form.id==='reset-request-form'){const result=await postAccount('/password-reset/request',data);$('#reset-code').hidden=false;$('#reset-code').textContent=`${result.message} · 本次模拟验证码：${result.demo_code}`;return;}
-        if(form.id==='reset-confirm-form'){const result=await postAccount('/password-reset/confirm',data);openAuth('login');toast(result.message);return;}
+        if(form.id==='reset-request-form'){const result=await postAccount('/password-reset/request',data);$('#reset-confirm-form').hidden=false;$('#reset-code').hidden=false;$('#reset-code').textContent=`${result.message} · 本次模拟验证码：${result.demo_code}`;return;}
+        if(form.id==='reset-confirm-form'){const result=await postAccount('/password-reset/confirm',{...fields($('#reset-request-form')),...data});openAuth('login');toast(result.message);return;}
         if(form.id==='reserve-form'){
             if(data.end<=data.start)throw new Error('结束时间必须晚于开始时间');
             const result=await postBooking('/orders',{room_id:data.room_id,start_time:`${data.date}T${data.start}:00`,end_time:`${data.date}T${data.end}:00`});closeModal();state.orderTab='all';location.hash='orders';await render();toast(result.trim());return;
         }
         if(form.id==='order-action-form'){
             const action=form.dataset.mode;const result=['pay','cancel','refund'].includes(action)?await postBooking('/'+action,data):await postFeedback('/'+(action==='door'?'door/retry':action),data);
-            closeModal();await render();toast(typeof result==='string'?result.trim():{checkin:'签到成功，模拟门禁已开门',door:'开门状态已确认',finish:'使用已结束，空间已释放'}[action]);return;
+            closeModal();await render();toast(typeof result==='string'?result.trim():{checkin:result.door_open_result==='FAILED'?'签到成功，开门失败，请通过订单重试':'签到成功，模拟门禁已开门',door:'开门状态已确认',finish:'使用已结束，空间已释放'}[action]);return;
         }
-        if(form.id==='review-form'){await postFeedback('/review',data);closeModal();toast('评价已提交，感谢你的反馈');return;}
+        if(form.id==='record-violation'){await postFeedback('/admin/violation',data);form.reset();toast('违约已登记');return;}
+        if(form.id==='resolve-refund-form'){const result=await postBooking('/admin/resolve-refund',data);closeModal();await render();toast(result.trim());return;}
+        if(form.id==='review-form'){await postFeedback('/review',new FormData(form));closeModal();toast('评价已提交，感谢你的反馈');return;}
         if(form.id==='fault-form'){await postFeedback('/fault',data);closeModal();state.feedbackTab='faults';location.hash='feedback';await render();toast('报障已提交，请留意处理进度');return;}
-        if(form.id==='appeal-form'){await postFeedback('/appeal',data);closeModal();state.feedbackTab='appeals';location.hash='feedback';await render();toast('申诉已提交，请留意复核结果');return;}
+        if(form.id==='appeal-form'){await postFeedback('/appeal',new FormData(form));closeModal();state.feedbackTab='appeals';location.hash='feedback';await render();toast('申诉已提交，请留意复核结果');return;}
         if(form.id==='room-form'){await postAccount('/admin/rooms/save',data);closeModal();await render();toast('空间信息已保存');return;}
         if(form.id==='room-status-form'){
             const room=state.adminRooms.find(item=>item.room_id===data.room_id);
             if (!room) throw new Error('房间列表已变化，请刷新后再试。');
-            const impact=data.listing_status==='UNLISTED'||data.maintenance_status==='MAINTENANCE'
-                ? '此状态将阻止新预约，已有预约保留。' : '房间可接受新预约，实际空闲时段以订单校验为准。';
+            const unavailable=data.listing_status==='UNLISTED'||data.maintenance_status==='MAINTENANCE';
+            const affected=unavailable?await account('/admin/rooms/impact',{data:{room_id:room.room_id}}):null;
+            const impact=unavailable
+                ? '此状态将阻止新预约。'+affected.order_count+' 笔有效预约继续保留。' : '房间可接受新预约，实际空闲时段以订单校验为准。';
             showModal('确认调整房间状态',`<p class="notice">${e(room.room_name)} · ${e(label(data.listing_status))}
                 · ${e(label(data.maintenance_status))}。${impact}</p><form id="room-status-confirm">
                 ${Object.entries(data).map(([key,value])=>`<input type="hidden" name="${e(key)}" value="${e(value)}">`).join('')}
@@ -449,7 +506,7 @@ document.addEventListener('submit',async event=>{
     }catch(error){if($('#modal').open)formError(error.message);else toast(error.message,true);}
     finally{controls.forEach(b=>b.disabled=false);}
 });
-document.addEventListener('change',event=>{const form=event.target.closest('#reserve-form');if(form){const data=fields(form);const duration=Number(data.end?.slice(0,2))-Number(data.start?.slice(0,2));$('#price-preview').textContent=duration>0?'¥'+money(duration*Number(state.rule.hourly_price)):'请选择有效时段';}});
+document.addEventListener('change',event=>{const form=event.target.closest('#reserve-form');if(form){const data=fields(form);const duration=Number(data.end?.slice(0,2))-Number(data.start?.slice(0,2));$('#price-preview').textContent=duration>0?'¥'+money(duration*Number(state.rule.hourly_price)):'请选择有效时段';void showSlotPreview(form);}});
 $('#modal').addEventListener('click',event=>{if(event.target===$('#modal')){const rect=$('#modal').getBoundingClientRect();if(event.clientX<rect.left||event.clientX>rect.right||event.clientY<rect.top||event.clientY>rect.bottom)closeModal();}});
 window.addEventListener('hashchange',()=>render());
 $('#today').textContent=new Intl.DateTimeFormat('zh-CN',{year:'numeric',month:'long',day:'numeric',weekday:'long',timeZone:'Asia/Shanghai'}).format(new Date());

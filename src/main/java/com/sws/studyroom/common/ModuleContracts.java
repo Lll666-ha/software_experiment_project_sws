@@ -12,7 +12,7 @@ public final class ModuleContracts {
     public enum ListingStatus { LISTED, UNLISTED }
     public enum MaintenanceStatus { NORMAL, MAINTENANCE }
     public enum BookingStatus { PENDING_PAYMENT, PENDING_CHECKIN, IN_USE, CANCELLED, FINISHED }
-    public enum ReleaseReason { UNPAID_CANCELLED, PAYMENT_TIMEOUT, REFUND_SUCCEEDED,
+    public enum ReleaseReason { UNPAID_CANCELLED, PAYMENT_TIMEOUT, PAYMENT_FAILED, REFUND_SUCCEEDED,
         NO_SHOW, FINISHED_EARLY, ENDED }
 
     public record RoomView(long roomId, ListingStatus listingStatus,
