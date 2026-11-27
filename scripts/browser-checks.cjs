@@ -24,9 +24,14 @@ const check = (condition, name) => { assert.ok(condition, name); console.log('PA
     const suffix = Date.now().toString();
     const username = 'web_ci_' + suffix;
     await page.locator('#auth-form [name=username]').fill(username);
-    await page.locator('#auth-form [name=phone]').fill('139' + suffix.slice(-8));
+    await page.locator('#auth-form [name=phone]').fill('136' + suffix.slice(-8));
     await page.locator('#auth-form [name=password]').fill('Browser@123456');
-    await page.getByRole('button', { name: '注册并开始使用' }).click();
+    check(await page.locator('#auth-form').evaluate(form => form.checkValidity()), 'registration inputs satisfy the form');
+    const [registration] = await Promise.all([
+      page.waitForResponse(response => response.url().endsWith('/api/account-rooms/register')),
+      page.getByRole('button', { name: '注册并开始使用' }).click()
+    ]);
+    if (!registration.ok()) throw new Error(`Registration failed (${registration.status()}): ${await registration.text()}`);
     await page.locator('#modal').waitFor({ state: 'hidden' });
     check(await page.locator('[data-view=admin]').isHidden(), 'ordinary user has no management navigation');
     await page.locator('.room-card').first().getByRole('button', { name: '预约空间' }).click();
@@ -98,6 +103,7 @@ const check = (condition, name) => { assert.ok(condition, name); console.log('PA
     await browser.close();
   } catch (error) {
     for (const context of browser.contexts()) for (const [i, page] of context.pages().entries()) {
+      console.error('Visible form feedback:', await page.locator('.form-error:visible').allTextContents().catch(() => []));
       await page.screenshot({ path: `${output}/failure-${i}.png`, fullPage: true }).catch(() => {});
       fs.writeFileSync(`${output}/failure-${i}.html`, await page.content().catch(() => ''));
     }
