@@ -14,10 +14,15 @@ public final class Database {
         } catch (ClassNotFoundException exception) {
             throw new SQLException("MySQL JDBC driver is missing", exception);
         }
-        return DriverManager.getConnection(
+        Connection connection = DriverManager.getConnection(
                 requiredEnvironment("SWS_DB_URL"),
                 requiredEnvironment("SWS_DB_USER"),
                 requiredEnvironment("SWS_DB_PASSWORD"));
+        try {
+            connection.setTransactionIsolation(Connection.TRANSACTION_READ_COMMITTED);
+            try (var statement = connection.createStatement()) { statement.execute("SET time_zone = '+08:00'"); }
+            return connection;
+        } catch (SQLException ex) { connection.close(); throw ex; }
     }
 
     private static String requiredEnvironment(String name) throws SQLException {
@@ -28,3 +33,4 @@ public final class Database {
         return value;
     }
 }
+

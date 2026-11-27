@@ -15,3 +15,4 @@ public class HealthServlet extends HttpServlet {
         response.getWriter().write("{\"status\":\"ok\"}");
     }
 }
+

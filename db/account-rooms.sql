@@ -1,4 +1,65 @@
 USE studyroom;
 
--- TODO(沈玉婷)：按设计实现 user、room 及负责模块的相关表。
--- 跨模块外键先和对应负责人确认表名与字段。
+CREATE TABLE IF NOT EXISTS `user` (
+    user_id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    username VARCHAR(32) NOT NULL,
+    phone VARCHAR(20) NULL,
+    password_salt CHAR(32) NOT NULL,
+    password_hash CHAR(64) NOT NULL,
+    role VARCHAR(24) NOT NULL DEFAULT 'USER',
+    account_status VARCHAR(24) NOT NULL DEFAULT 'ACTIVE',
+    credit_score INT NOT NULL DEFAULT 300,
+    credit_suspended_until DATETIME NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_user_username (username),
+    UNIQUE KEY uk_user_phone (phone),
+    CONSTRAINT ck_user_role CHECK (role IN ('USER', 'ROOM_ADMIN', 'SUPER_ADMIN')),
+    CONSTRAINT ck_user_status CHECK (account_status IN ('ACTIVE', 'DISABLED'))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS room (
+    room_id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    room_name VARCHAR(80) NOT NULL,
+    location VARCHAR(160) NOT NULL,
+    capacity INT NOT NULL,
+    opening_hours VARCHAR(11) NOT NULL DEFAULT '08:00-22:00',
+    listing_status VARCHAR(24) NOT NULL DEFAULT 'UNLISTED',
+    maintenance_status VARCHAR(24) NOT NULL DEFAULT 'NORMAL',
+    manager_user_id BIGINT NULL,
+    maintenance_before_fault VARCHAR(24) NOT NULL DEFAULT 'NORMAL',
+    fault_maintenance_active TINYINT NOT NULL DEFAULT 0,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    CONSTRAINT fk_room_manager FOREIGN KEY (manager_user_id) REFERENCES `user` (user_id),
+    CONSTRAINT ck_room_capacity CHECK (capacity > 0),
+    CONSTRAINT ck_room_listing CHECK (listing_status IN ('LISTED', 'UNLISTED')),
+    CONSTRAINT ck_room_maintenance CHECK (maintenance_status IN ('NORMAL', 'MAINTENANCE')),
+    UNIQUE KEY uk_room_name_location (room_name, location),
+    INDEX idx_room_available (listing_status, maintenance_status, capacity)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- 本地演示用预置房管账号：room_admin / Admin@123456。
+-- 密码以 PBKDF2WithHmacSHA256（120000 次迭代）保存；生产环境应通过安全的
+-- 身份管理流程创建账号，并更换这里的默认密码。
+INSERT IGNORE INTO `user`
+    (username, phone, password_salt, password_hash, role, account_status)
+VALUES
+    ('room_admin', '13800000002',
+     '6d79526f6f6d41646d696e3230323631',
+     '06fed1d39b3c6c536eb54e12beb56b905ec8605f1fb870b1f8929884a70a2e9f',
+     'ROOM_ADMIN', 'ACTIVE');
+
+INSERT IGNORE INTO room
+    (room_id, room_name, location, capacity, opening_hours, listing_status, maintenance_status)
+VALUES
+    (9101, 'A101 小组研讨间', '图书馆一层 A101', 4, '08:00-22:00', 'LISTED', 'NORMAL'),
+    (9102, 'A201 大型研讨间', '图书馆二层 A201', 8, '08:00-22:00', 'LISTED', 'NORMAL'),
+    (9103, 'B301 设备维护间', '综合楼三层 B301', 12, '09:00-18:00', 'LISTED', 'MAINTENANCE'),
+    (9104, 'B302 暂未开放间', '综合楼三层 B302', 6, '09:00-18:00', 'UNLISTED', 'NORMAL');
+
+-- 让预置房管可直接演示编辑、上下架与维护 9101/9102。
+UPDATE room
+SET manager_user_id = (SELECT user_id FROM `user` WHERE username = 'room_admin')
+WHERE room_id IN (9101, 9102);
+

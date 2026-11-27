@@ -5,9 +5,15 @@ CREATE TABLE IF NOT EXISTS rule_version (
  advance_days INT NOT NULL,
  daily_slots INT NOT NULL,
  hourly_price DECIMAL(10,2) NOT NULL,
- refund_percent INT NOT NULL
+ refund_percent INT NOT NULL,
+ checkin_early_minutes INT NOT NULL DEFAULT 15,
+ checkin_late_minutes INT NOT NULL DEFAULT 15,
+ timeout_deduct INT NOT NULL DEFAULT 10,
+ early_release_deduct INT NOT NULL DEFAULT 0,
+ credit_suspend_days INT NOT NULL DEFAULT 3,
+ review_window_hours INT NOT NULL DEFAULT 24
 ) ENGINE=InnoDB;
-INSERT IGNORE INTO rule_version VALUES (1,7,2,10.00,80);
+INSERT IGNORE INTO rule_version(rule_version_id,advance_days,daily_slots,hourly_price,refund_percent) VALUES (1,7,2,10.00,80);
 
 CREATE TABLE IF NOT EXISTS booking (
  booking_id BIGINT AUTO_INCREMENT PRIMARY KEY,
@@ -19,6 +25,7 @@ CREATE TABLE IF NOT EXISTS booking (
  booking_status VARCHAR(24) NOT NULL,
  rule_version_id BIGINT NOT NULL,
  pay_deadline DATETIME NOT NULL,
+ created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
  FOREIGN KEY (rule_version_id) REFERENCES rule_version(rule_version_id),
  INDEX (user_id, start_time)
 ) ENGINE=InnoDB;
@@ -45,3 +52,4 @@ CREATE TABLE IF NOT EXISTS refund (
  refunded_at DATETIME NOT NULL,
  FOREIGN KEY (booking_id) REFERENCES booking(booking_id)
 ) ENGINE=InnoDB;
+

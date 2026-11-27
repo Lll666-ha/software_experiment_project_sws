@@ -14,3 +14,4 @@ public abstract class PendingServlet extends HttpServlet {
         response.getWriter().write("{\"error\":\"NOT_IMPLEMENTED\"}");
     }
 }
+

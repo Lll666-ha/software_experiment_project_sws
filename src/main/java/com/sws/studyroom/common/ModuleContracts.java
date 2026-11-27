@@ -50,3 +50,4 @@ public final class ModuleContracts {
                             String reason) throws SQLException;
     }
 }
+

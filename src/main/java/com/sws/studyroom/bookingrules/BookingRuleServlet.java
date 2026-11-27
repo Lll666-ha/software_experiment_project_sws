@@ -41,6 +41,7 @@ public class BookingRuleServlet extends HttpServlet implements BookingAccess {
             return;
         }
         String path = req.getPathInfo();
+        if ("/order-data".equals(path) || "/rule-data".equals(path)) res.setContentType("application/json;charset=UTF-8");
         boolean admin = path != null && path.startsWith("/admin/");
         if (admin && identity.role() != SessionIdentity.Role.SUPER_ADMIN) {
             res.setStatus(403);
@@ -48,8 +49,7 @@ public class BookingRuleServlet extends HttpServlet implements BookingAccess {
             return;
         }
         if (write) {
-            String token = (String) req.getSession().getAttribute("bookingFormToken");
-            if (token == null || !token.equals(req.getParameter("csrf"))) {
+            if (!SessionIdentity.validCsrf(req, req.getParameter("csrf"))) {
                 res.setStatus(403);
                 res.getWriter().println("请刷新预约页面后重试");
                 return;
@@ -60,7 +60,7 @@ public class BookingRuleServlet extends HttpServlet implements BookingAccess {
                 if (session.getAttribute("bookingFormToken") == null) {
                     session.setAttribute("bookingFormToken", java.util.UUID.randomUUID().toString());
                 }
-                res.getWriter().print(session.getAttribute("bookingFormToken"));
+                res.getWriter().print(SessionIdentity.csrf(req));
             }
             return;
         }
@@ -68,7 +68,7 @@ public class BookingRuleServlet extends HttpServlet implements BookingAccess {
         try (Connection c = Database.open()) {
             c.setAutoCommit(false);
             try {
-                if ("/orders".equals(path) && !write) expirePending(c, identity.userId());
+                if (("/orders".equals(path) || "/order-data".equals(path)) && !write) expirePending(c, identity.userId());
                 String output = write ? change(c, req, identity.userId(), path)
                                       : read(c, req, identity.userId(), path);
                 c.commit();
@@ -101,6 +101,10 @@ public class BookingRuleServlet extends HttpServlet implements BookingAccess {
                         + " 个时段；每小时 " + rule.price() + " 元";
             }
             case "/orders" -> orders(c, user);
+            case "/order-data" -> com.sws.studyroom.common.Json.encode(com.sws.studyroom.common.Sql.rows(c,
+                    "SELECT b.*,r.room_name,p.pay_amount,f.refund_amount,u.actual_end_time FROM booking b JOIN room r USING(room_id) LEFT JOIN payment p USING(booking_id) LEFT JOIN refund f USING(booking_id) LEFT JOIN `usage` u USING(booking_id) WHERE b.user_id=? ORDER BY b.booking_id DESC LIMIT 100", user));
+            case "/rule-data" -> com.sws.studyroom.common.Json.encode(com.sws.studyroom.common.Sql.one(c,
+                    "SELECT * FROM rule_version ORDER BY rule_version_id DESC LIMIT 1"));
             case "/quote" -> {
                 BookingView order = owned(c, number(r, "booking_id"), user);
                 require(order.bookingStatus() == BookingStatus.PENDING_CHECKIN, "订单当前不可退款");
@@ -116,7 +120,11 @@ public class BookingRuleServlet extends HttpServlet implements BookingAccess {
         return switch (path == null ? "" : path) {
             case "/orders" -> create(c, r, user, now);
             case "/pay", "/cancel", "/refund" -> {
-                BookingView order = owned(c, number(r, "booking_id"), user);
+                BookingView initial = owned(c, number(r, "booking_id"), user);
+                try (var p=query(c,"SELECT user_id FROM `user` WHERE user_id=? FOR UPDATE",user);var rows=p.executeQuery()) { rows.next(); }
+                try (var p=query(c,"SELECT room_id FROM room WHERE room_id=? FOR UPDATE",initial.roomId());var rows=p.executeQuery()) { rows.next(); }
+                try (var p=query(c,"SELECT booking_id FROM booking WHERE booking_id=? FOR UPDATE",initial.bookingId());var rows=p.executeQuery()) { rows.next(); }
+                BookingView order=owned(c,initial.bookingId(),user);
                 yield switch (path) {
                     case "/pay" -> pay(c, order, now);
                     case "/cancel" -> {
@@ -128,20 +136,26 @@ public class BookingRuleServlet extends HttpServlet implements BookingAccess {
                 };
             }
             case "/admin/rules" -> {
-                int days = integer(r, "advance_days", 1, 30);
+                int days = integer(r, "advance_days", 1, 7);
                 int slots = integer(r, "daily_slots", 1, 24);
                 int percent = integer(r, "refund_percent", 0, 100);
                 BigDecimal price = new BigDecimal(parameter(r, "hourly_price")).setScale(2, java.math.RoundingMode.HALF_UP);
                 require(price.signum() >= 0 && price.compareTo(new BigDecimal("10000")) <= 0, "价格不合法");
-                update(c, "INSERT INTO rule_version(advance_days,daily_slots,hourly_price,refund_percent) VALUES (?,?,?,?)",
-                        days, slots, price, percent);
+                var current = com.sws.studyroom.common.Sql.one(c, "SELECT * FROM rule_version ORDER BY rule_version_id DESC LIMIT 1 FOR UPDATE");
+                if (r.getParameter("rule_version_id") != null)
+                    require(number(r,"rule_version_id") == Long.parseLong(current.get("rule_version_id").toString()), "规则已更新，请刷新后重试");
+                update(c, "INSERT INTO rule_version(advance_days,daily_slots,hourly_price,refund_percent,checkin_early_minutes,checkin_late_minutes,timeout_deduct,early_release_deduct,credit_suspend_days,review_window_hours) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                        days, slots, price, percent,
+                        optionalInteger(r,current,"checkin_early_minutes",0,60), optionalInteger(r,current,"checkin_late_minutes",0,60),
+                        optionalInteger(r,current,"timeout_deduct",0,300),optionalInteger(r,current,"early_release_deduct",0,300),
+                        optionalInteger(r,current,"credit_suspend_days",3,7),optionalInteger(r,current,"review_window_hours",1,168));
                 yield "规则已保存，新订单使用新规则";
             }
             case "/admin/freeze" -> {
                 String action = parameter(r, "action");
                 require(action.equals("freeze") || action.equals("unfreeze"), "无效操作");
-                String target = action.equals("freeze") ? "冻结" : "正常";
-                String source = action.equals("freeze") ? "正常" : "冻结";
+                String target = action.equals("freeze") ? "DISABLED" : "ACTIVE";
+                String source = action.equals("freeze") ? "ACTIVE" : "DISABLED";
                 require(update(c, "UPDATE user SET account_status=? WHERE user_id=? AND account_status=?",
                         target, number(r, "user_id"), source) == 1, "用户不存在或状态不匹配");
                 yield "用户状态已更新";
@@ -173,10 +187,11 @@ public class BookingRuleServlet extends HttpServlet implements BookingAccess {
                 && end.equals(end.truncatedTo(java.time.temporal.ChronoUnit.HOURS))
                 && slots > 0 && slots <= rule.slots(), "请选择规则范围内的整点时段");
         lockEligibleUser(c, user, now);
+        expirePending(c, user);
         try (var p = query(c, "SELECT listing_status, maintenance_status, opening_hours FROM room WHERE room_id=? FOR UPDATE", room);
              var rows = p.executeQuery()) {
-            require(rows.next() && ("LISTED".equals(rows.getString(1)) || "上架".equals(rows.getString(1)))
-                    && ("NORMAL".equals(rows.getString(2)) || "正常".equals(rows.getString(2))), "房间当前不可预约");
+            require(rows.next() && "LISTED".equals(rows.getString(1))
+                    && "NORMAL".equals(rows.getString(2)), "房间当前不可预约");
             String[] hours = rows.getString(3).split("-", -1);
             require(hours.length == 2 && !start.toLocalTime().isBefore(LocalTime.parse(hours[0].trim()))
                     && end.toLocalDate().equals(start.toLocalDate())
@@ -212,7 +227,7 @@ public class BookingRuleServlet extends HttpServlet implements BookingAccess {
             require(row.next(), "用户不存在");
             String status = row.getString(1);
             Timestamp suspended = row.getTimestamp(3);
-            require(("正常".equals(status) || "NORMAL".equals(status)) && row.getInt(2) > 0
+            require("ACTIVE".equals(status) && row.getInt(2) > 0
                     && (suspended == null || !suspended.toLocalDateTime().isAfter(now)), "当前账号无法预约");
         }
     }
@@ -240,7 +255,7 @@ public class BookingRuleServlet extends HttpServlet implements BookingAccess {
         }
         require(changeStatus(c, order.bookingId(), BookingStatus.PENDING_PAYMENT, BookingStatus.PENDING_CHECKIN),
                 "订单已处理");
-        update(c, "INSERT INTO payment SELECT booking_id,total_amount,? FROM booking WHERE booking_id=?",
+        update(c, "INSERT INTO payment(booking_id,pay_amount,paid_at) SELECT booking_id,total_amount,? FROM booking WHERE booking_id=?",
                 now, order.bookingId());
         return "模拟支付成功，等待签到";
     }
@@ -371,6 +386,11 @@ public class BookingRuleServlet extends HttpServlet implements BookingAccess {
         return value;
     }
 
+    private static int optionalInteger(HttpServletRequest r, java.util.Map<String,Object> current, String name, int min, int max) {
+        if (r.getParameter(name) == null || r.getParameter(name).isBlank()) return ((Number)current.get(name)).intValue();
+        return integer(r,name,min,max);
+    }
+
     private static void require(boolean ok, String message) {
         if (!ok) throw new IllegalArgumentException(message);
     }
@@ -396,3 +416,4 @@ public class BookingRuleServlet extends HttpServlet implements BookingAccess {
         for (int i = 0; i < values.length; i++) p.setObject(i + 1, values[i]);
     }
 }
+
