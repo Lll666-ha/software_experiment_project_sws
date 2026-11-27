@@ -1,14 +1,185 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>房间使用与反馈</title>
+    <meta charset="UTF-8">
+    <title>签到、提前结束、评价、故障上报、申诉测试</title>
+    <style>
+        body {
+            width: 860px;
+            margin: 30px auto;
+            font-family: "Microsoft Yahei", sans-serif;
+            color: #222;
+        }
+        h3 {
+            font-size: 28px;
+            font-weight: bold;
+            margin: 10px 0 20px 0;
+        }
+        .item {
+            border-top: 1px solid #ccc;
+            padding: 14px 4px;
+        }
+        .item:last-of-type {
+            border-bottom: 1px solid #ccc;
+        }
+        .item h4 {
+            font-size: 16px;
+            font-weight: bold;
+            margin: 0 0 10px 0;
+        }
+        .line {
+            margin: 6px 0;
+        }
+        label {
+            font-size: 14px;
+        }
+        input {
+            padding: 6px;
+            width: 200px;
+            margin: 4px 8px 4px 4px;
+            border: 1px solid #ccc;
+            border-radius: 2px;
+        }
+        button {
+            padding: 6px 16px;
+            cursor: pointer;
+            background: #f0f0f0;
+            color: #333;
+            border: 1px solid #ccc;
+            border-radius: 2px;
+            font-size: 14px;
+        }
+        button:hover {
+            background: #e4e4e4;
+        }
+        #msg {
+            margin-top: 20px;
+            padding: 10px;
+            min-height: 20px;
+            border: 1px solid #999;
+            font-size: 14px;
+        }
+    </style>
 </head>
 <body>
-    <p><a href="../">返回首页</a></p>
-    <main>
-        <!-- TODO(王鑫)：在这里添加本模块页面，也可以在当前目录新增页面和脚本。 -->
-    </main>
+<h3>签到与反馈</h3>
+
+<div class="item">
+    <h4>① 签到开门</h4>
+    <div class="line">
+        <label>booking_id：</label><input type="text" id="ck_booking" value="1">
+        <label>event_no：</label><input type="text" id="ck_event" value="e001">
+        <button onclick="doCheckIn()">执行</button>
+    </div>
+</div>
+
+<div class="item">
+    <h4>② 门禁重试</h4>
+    <div class="line">
+        <label>booking_id：</label><input type="text" id="door_booking" value="1">
+        <button onclick="doRetryDoor()">执行</button>
+    </div>
+</div>
+
+<div class="item">
+    <h4>③ 提前结束使用</h4>
+    <div class="line">
+        <label>booking_id：</label><input type="text" id="finish_booking" value="1">
+        <button onclick="doFinish()">执行</button>
+    </div>
+</div>
+
+<div class="item">
+    <h4>④ 提交评价</h4>
+    <div class="line">
+        <label>booking_id：</label><input type="text" id="rev_booking" value="1">
+        <label>score_1(1-5)：</label><input type="text" id="rev_s1" value="4">
+        <label>score_2(1-5)：</label><input type="text" id="rev_s2" value="4">
+    </div>
+    <div class="line">
+        <label>评价文字：</label><input type="text" id="rev_comment" value="环境不错" style="width:400px;">
+        <button onclick="doReview()">执行</button>
+    </div>
+</div>
+
+<div class="item">
+    <h4>⑤ 上报故障</h4>
+    <div class="line">
+        <label>room_id：</label><input type="text" id="fault_room" value="1">
+        <label>故障描述：</label><input type="text" id="fault_desc" value="研讨间顶灯无法点亮" style="width:400px;">
+        <button onclick="doFault()">执行</button>
+    </div>
+</div>
+
+<div class="item">
+    <h4>⑥ 违规申诉</h4>
+    <div class="line">
+        <label>booking_id：</label><input type="text" id="ap_booking" value="1">
+        <label>violation_id：</label><input type="text" id="ap_vio" value="1">
+        <label>申诉理由：</label><input type="text" id="ap_reason" value="误判" style="width:300px;">
+        <button onclick="doAppeal()">执行</button>
+    </div>
+</div>
+
+<div id="msg"></div>
+
+<script>
+    const baseUrl = "/studyroom/api/usage-feedback";
+
+    function showMsg(text) {
+        document.getElementById("msg").innerText = text;
+    }
+
+    async function post(url, body) {
+        try {
+            const res = await fetch(url, {
+                method: "POST",
+                headers: {"Content-Type":"application/json"},
+                credentials: "include",
+                body: JSON.stringify(body)
+            });
+            const data = await res.json();
+            if (res.ok) {
+                showMsg("✅成功：" + JSON.stringify(data));
+            } else {
+                showMsg("❌失败：" + JSON.stringify(data));
+            }
+        } catch(e) {
+            showMsg("❌请求异常：" + e);
+        }
+    }
+
+    function doCheckIn(){
+        const booking_id = document.getElementById("ck_booking").value;
+        const event_no = document.getElementById("ck_event").value;
+        post(baseUrl + "/checkin", {booking_id, event_no});
+    }
+    function doRetryDoor(){
+        const booking_id = document.getElementById("door_booking").value;
+        post(baseUrl + "/door/retry", {booking_id});
+    }
+    function doFinish(){
+        const booking_id = document.getElementById("finish_booking").value;
+        post(baseUrl + "/finish", {booking_id});
+    }
+    function doReview(){
+        const booking_id = document.getElementById("rev_booking").value;
+        const score_1 = document.getElementById("rev_s1").value;
+        const score_2 = document.getElementById("rev_s2").value;
+        const comment = document.getElementById("rev_comment").value;
+        post(baseUrl + "/review", {booking_id, score_1, score_2, comment});
+    }
+    function doFault(){
+        const room_id = document.getElementById("fault_room").value;
+        const fault_desc = document.getElementById("fault_desc").value;
+        post(baseUrl + "/fault", {room_id, fault_desc});
+    }
+    function doAppeal(){
+        const booking_id = document.getElementById("ap_booking").value;
+        const violation_id = document.getElementById("ap_vio").value;
+        const appeal_reason = document.getElementById("ap_reason").value;
+        post(baseUrl + "/appeal", {booking_id, violation_id, appeal_reason});
+    }
+</script>
 </body>
 </html>
