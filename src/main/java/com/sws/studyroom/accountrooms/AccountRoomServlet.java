@@ -90,6 +90,8 @@ public class AccountRoomServlet extends HttpServlet implements ModuleContracts.R
         return switch (path) {
             case "/rooms" -> rooms(c, r, false);
             case "/admin/rooms" -> { requireAdmin(r); yield rooms(c, r, true); }
+            case "/catalog" -> com.sws.studyroom.common.Json.encode(RoomCatalog.search(c, r, null));
+            case "/admin/catalog" -> com.sws.studyroom.common.Json.encode(RoomCatalog.search(c, r, requireAdmin(r)));
             default -> throw new Failure(404, "接口不存在");
         };
     }

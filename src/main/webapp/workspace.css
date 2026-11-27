@@ -7,6 +7,14 @@
   --bg: #e8f1fa;
   --shadow: 0 3px 12px #23496909;
 }
+.catalog-filter { margin-bottom: 18px; }
+.catalog-filter .form-grid { grid-template-columns: repeat(auto-fit, minmax(155px, 1fr)); }
+.catalog-paging { display: flex; gap: 8px; align-items: center; justify-content: flex-end; flex-wrap: wrap; margin-top: 14px; }
+.catalog-paging small { margin-right: auto; }
+.room-review-results, .admin-credit-records { margin-top: 18px; }
+.room-card .room-body > .badge { display: inline-block; margin-bottom: 8px; }
+.badge.AVAILABLE { background: #dff4ec; color: #176247; }
+.badge.OCCUPIED, .badge.MAINTENANCE { background: #fff0d9; color: #744406; }
 .workspace { background: linear-gradient(148deg, #ddebf8, var(--bg) 400px); }
 .sidebar, .topbar { background: #f1f7fc; }
 .brand-mark { background: #153e64; }

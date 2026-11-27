@@ -102,7 +102,15 @@ public class BookingRuleServlet extends HttpServlet implements BookingAccess {
             }
             case "/orders" -> orders(c, user);
             case "/order-data" -> com.sws.studyroom.common.Json.encode(com.sws.studyroom.common.Sql.rows(c,
-                    "SELECT b.*,r.room_name,p.pay_amount,f.refund_amount,u.actual_end_time FROM booking b JOIN room r USING(room_id) LEFT JOIN payment p USING(booking_id) LEFT JOIN refund f USING(booking_id) LEFT JOIN `usage` u USING(booking_id) WHERE b.user_id=? ORDER BY b.booking_id DESC LIMIT 100", user));
+                    "SELECT b.*,r.room_name,p.pay_amount,f.refund_amount,u.actual_end_time,"
+                    + "TIMESTAMPADD(HOUR,rv.review_window_hours,u.actual_end_time) AS review_deadline,"
+                    + "CASE WHEN v.booking_id IS NOT NULL THEN 'SUBMITTED' "
+                    + "WHEN b.booking_status='FINISHED' AND ? BETWEEN u.actual_end_time AND "
+                    + "TIMESTAMPADD(HOUR,rv.review_window_hours,u.actual_end_time) THEN 'OPEN' ELSE 'CLOSED' END AS review_state "
+                    + "FROM booking b JOIN room r USING(room_id) JOIN rule_version rv USING(rule_version_id) "
+                    + "LEFT JOIN payment p USING(booking_id) LEFT JOIN refund f USING(booking_id) "
+                    + "LEFT JOIN `usage` u USING(booking_id) LEFT JOIN review v USING(booking_id) "
+                    + "WHERE b.user_id=? ORDER BY b.booking_id DESC LIMIT 100", now(), user));
             case "/rule-data" -> com.sws.studyroom.common.Json.encode(com.sws.studyroom.common.Sql.one(c,
                     "SELECT * FROM rule_version ORDER BY rule_version_id DESC LIMIT 1"));
             case "/quote" -> {
