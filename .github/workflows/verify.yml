@@ -41,3 +41,34 @@ jobs:
       - name: Run real MySQL integration checks
         run: |
           java -cp "target/test-classes:target/classes:target/studyroom/WEB-INF/lib/mysql-connector-j-8.4.0.jar:$HOME/.m2/repository/jakarta/servlet/jakarta.servlet-api/6.0.0/jakarta.servlet-api-6.0.0.jar" com.sws.studyroom.IntegrationChecks
+      - name: Start Tomcat for browser integration
+        run: |
+          mysql -h 127.0.0.1 -u root studyroom -e "UPDATE room SET listing_status='LISTED' WHERE room_id=9101;"
+          docker run -d --name studyroom-web --network host -e SWS_DB_URL -e SWS_DB_USER -e SWS_DB_PASSWORD -v "$PWD/target/studyroom.war:/usr/local/tomcat/webapps/studyroom.war:ro" tomcat:10.1-jdk17-temurin
+          for i in $(seq 1 40); do
+            if curl --fail --silent http://127.0.0.1:8080/studyroom/api/health; then exit 0; fi
+            sleep 2
+          done
+          docker logs studyroom-web
+          exit 1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install isolated browser test dependencies
+        run: |
+          npm install --prefix /tmp/studyroom-browser --no-save playwright@1.56.1
+          /tmp/studyroom-browser/node_modules/.bin/playwright install --with-deps chromium
+      - name: Check desktop and mobile flows in Chromium
+        env:
+          PLAYWRIGHT_MODULE: /tmp/studyroom-browser/node_modules/playwright
+        run: node scripts/browser-checks.cjs
+      - name: Save UI verification captures
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: studyroom-ui-verification
+          path: .artifacts/
+          if-no-files-found: ignore
+      - name: Server diagnostics on failure
+        if: failure()
+        run: docker logs studyroom-web || true

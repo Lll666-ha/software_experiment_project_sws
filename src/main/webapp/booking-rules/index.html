@@ -1,25 +1,2 @@
 <!doctype html>
-<html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>预约与规则</title>
-<main>
-<p><a href="../">返回首页</a></p>
-<h1>预约与规则</h1>
-<pre id="result" tabindex="-1" aria-live="polite"></pre>
-<form data-path="rules" method="get"><fieldset><legend>查看预约规则</legend><button>执行</button></fieldset></form>
-<form data-path="orders" method="post"><fieldset><legend>创建预约</legend><label>房间编号 <input name="room_id" type="text" required></label> <label>开始时间 <input name="start_time" type="datetime-local" required></label> <label>结束时间 <input name="end_time" type="datetime-local" required></label> <button>执行</button></fieldset></form>
-<form data-path="orders" method="get"><fieldset><legend>查看我的订单</legend><button>执行</button></fieldset></form>
-<form data-path="pay" method="post"><fieldset><legend>模拟支付</legend><label>订单编号 <input name="booking_id" type="text" required></label> <button>执行</button></fieldset></form>
-<form data-path="cancel" method="post"><fieldset><legend>取消待支付订单</legend><label>订单编号 <input name="booking_id" type="text" required></label> <button>执行</button></fieldset></form>
-<form data-path="quote" method="get"><fieldset><legend>查看预计退款</legend><label>订单编号 <input name="booking_id" type="text" required></label> <button>执行</button></fieldset></form>
-<form data-path="refund" method="post"><fieldset><legend>模拟退款</legend><label>订单编号 <input name="booking_id" type="text" required></label> <button>执行</button></fieldset></form>
-<h2>超级管理员</h2>
-<form data-path="admin/rules" method="post"><fieldset><legend>发布预约规则</legend><label>提前预约天数 <input name="advance_days" type="number" required></label> <label>每日时段上限 <input name="daily_slots" type="number" required></label> <label>每小时价格 <input name="hourly_price" type="text" required></label> <label>24小时内退款百分比 <input name="refund_percent" type="number" required></label> <button>执行</button></fieldset></form>
-<form data-path="admin/credit" method="get"><fieldset><legend>查询信用</legend><label>用户编号 <input name="user_id" type="text" required></label> <button>执行</button></fieldset></form>
-<form data-path="admin/freeze" method="post"><fieldset><legend>冻结或解冻</legend>
-<label>用户编号 <input name="user_id" required></label>
-<label>操作 <select name="action"><option value="freeze">冻结</option><option value="unfreeze">解冻</option></select></label>
-<button>保存</button></fieldset></form>
-<form data-path="admin/credit" method="post"><fieldset><legend>调整信用</legend><label>用户编号 <input name="user_id" type="text" required></label> <label>调整分值 <input name="delta" type="number" required></label> <label>原因 <input name="reason" type="text" required></label> <label>操作编号 <input name="event_id" type="text" required></label> <button>执行</button></fieldset></form>
-</main>
-<script src="booking.js" defer></script>
-</html>
+<html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>研间 · 共享研讨间预约平台</title><meta http-equiv="refresh" content="0;url=../?view=orders#orders"></head><body><p><a href="../?view=orders#orders">进入共享研讨间预约平台</a></p><script>location.replace(new URL('../?view=orders#orders',location.href).href);</script></body></html>
