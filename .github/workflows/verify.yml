@@ -44,7 +44,24 @@ jobs:
           done
       - name: Check legacy database migration preserves records
         run: python3 scripts/check-migration.py
-      - run: mvn --batch-mode clean verify
+      - name: Build and verify the WAR
+        run: |
+          set -o pipefail
+          build_log="$RUNNER_TEMP/studyroom-maven.log"
+          if mvn --batch-mode --no-transfer-progress clean verify 2>&1 | tee "$build_log"; then exit 0; fi
+          grep -q 'HTTP Status: 429' "$build_log" || exit 1
+          cat > "$RUNNER_TEMP/studyroom-maven-settings.xml" <<'XML'
+          <settings>
+            <mirrors>
+              <mirror>
+                <id>central-mirror</id>
+                <mirrorOf>central</mirrorOf>
+                <url>https://maven-central.storage-download.googleapis.com/maven2</url>
+              </mirror>
+            </mirrors>
+          </settings>
+          XML
+          mvn --batch-mode --no-transfer-progress --update-snapshots --settings "$RUNNER_TEMP/studyroom-maven-settings.xml" clean verify
       - name: Run real MySQL integration checks
         run: |
           java -cp "target/test-classes:target/classes:target/studyroom/WEB-INF/lib/mysql-connector-j-8.4.0.jar:$HOME/.m2/repository/jakarta/servlet/jakarta.servlet-api/6.0.0/jakarta.servlet-api-6.0.0.jar" com.sws.studyroom.IntegrationChecks
