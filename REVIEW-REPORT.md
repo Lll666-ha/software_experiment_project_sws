@@ -30,7 +30,7 @@
 
 ## 部署要求
 
-先备份并执行 `db/migrate-unified-fields.sql`，再部署新WAR。完整字段表、接口及枚举见 `FIELD-CONTRACT.md`。现有真实数据库未被改动。
+先备份，按 FIELD-CONTRACT.md 顺序执行建表/准备及迁移脚本，再部署新WAR。`prepare-legacy-account-rooms.sql` 专门兼容早期只有最少字段的预约测试库，保留用户/房间编号并恢复自增主键。完整字段表、接口及枚举见 `FIELD-CONTRACT.md`。现有真实数据库未被改动。
 
 ## 前端调整
 

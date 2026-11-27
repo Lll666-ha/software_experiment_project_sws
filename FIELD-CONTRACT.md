@@ -251,7 +251,7 @@
 
 ## 部署与历史库迁移
 
-新建数据库按顺序执行：`db/init.sql` → `db/account-rooms.sql` → `db/booking-rules.sql` → `db/usage-feedback.sql` → `db/migrate-unified-fields.sql`。历史数据库先备份，再执行迁移脚本；不要重新导入旧演示数据。迁移可重复执行，改列名、补列并统一可识别状态，保留现有信用分和业务记录；只把新用户默认分改为300，不将已有100分账户直接改成300分。
+新建数据库按顺序执行：`db/init.sql` → `db/prepare-legacy-account-rooms.sql` → `db/account-rooms.sql` → `db/booking-rules.sql` → `db/usage-feedback.sql` → `db/migrate-unified-fields.sql`。历史数据库先备份，再按同样顺序执行；准备脚本只为已存在的旧user/room表补列，空库不建占位表。早期预约测试库中没有正式用户名、密码的9001等用户保留ID和记录，需另行注册正式账号；房间缺少的名称/位置标为待完善，可由管理员编辑。不要重新导入旧演示数据。迁移可重复执行，改列名、补列并统一可识别状态，保留现有信用分和业务记录；只把新用户默认分改为300，不将已有100分账户直接改成300分。
 
 历史信用流水缺少的 requested_delta / score_after 保留NULL，不能根据当前信用分伪造历史快照。旧 usage 示例数据可能关联不存在的订单，须人工核对来源；新建库不再插入这些孤立记录。迁移脚本不删除任何历史记录。
 

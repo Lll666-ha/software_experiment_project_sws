@@ -1,69 +1,11 @@
-# 用户与房间模块本地运行说明
+# 账号与房间模块运行
 
-## 1. 软件要求
+使用JDK17、Maven、Tomcat10.1、MySQL8，运行环境和部署方式见README.md。
 
-- JDK 17
-- Maven 3.9+
-- Tomcat 10.1
-- MySQL 8.x
+数据库按 FIELD-CONTRACT.md 的完整顺序执行。早期预约测试库务必先运行 prepare-legacy-account-rooms.sql，再运行正式模块脚本与统一迁移，避免旧user/room缺少账号或房间详情字段。
 
-确认命令：
+新建库已有课程演示房管 room_admin / Admin@123456，管理9101、9102，无须重复注册该账号。新注册用户为USER；超级管理员由数据库管理者给已注册账号分配SUPER_ADMIN角色。
 
-```powershell
-java -version
-mvn -version
-mysql --version
-```
+统一入口为 /studyroom/，旧 /studyroom/account-rooms/ 路径保留跳转。房间筛选在“探索空间”，房间新增、编辑、上下架和维护在“管理工作台”。
 
-## 2. 初始化数据库
-
-登录 MySQL 后执行（路径按本机项目位置修改）：
-
-```sql
-source C:/path/software_experiment_project_sws/db/init.sql;
-source C:/path/software_experiment_project_sws/db/account-rooms.sql;
-source C:/path/software_experiment_project_sws/db/booking-rules.sql;
-```
-
-页面注册的账号默认都是普通用户。要测试房管功能，注册 `room_admin` 后执行：
-
-```sql
-USE studyroom;
-UPDATE `user` SET role='ROOM_ADMIN' WHERE username='room_admin';
-UPDATE room
-SET manager_user_id=(SELECT user_id FROM `user` WHERE username='room_admin')
-WHERE room_id IN (9101, 9102);
-```
-
-执行后退出页面并重新登录，使会话取得新角色。
-
-## 3. 打包和部署
-
-在设置数据库环境变量的同一个 PowerShell 中执行：
-
-```powershell
-$env:SWS_DB_URL = 'jdbc:mysql://localhost:3306/studyroom?useUnicode=true&characterEncoding=UTF-8&serverTimezone=Asia/Shanghai'
-$env:SWS_DB_USER = 'root'
-$env:SWS_DB_PASSWORD = '替换成你的MySQL密码'
-
-mvn clean verify
-Copy-Item target\studyroom.war C:\path\apache-tomcat-10.1\webapps\studyroom.war -Force
-& C:\path\apache-tomcat-10.1\bin\catalina.bat run
-```
-
-浏览器访问：
-
-```text
-http://localhost:8080/studyroom/account-rooms/
-```
-
-## 4. 自动冒烟测试
-
-Tomcat 启动且数据库初始化后，另开 PowerShell：
-
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts\account-rooms-smoke.ps1
-```
-
-脚本验证房间筛选、用户注册、登录会话、普通用户权限拦截、退出及再次登录。完整手工用例见 `ACCOUNT-ROOMS-TEST.md`。
-
+scripts/account-rooms-smoke.ps1 保留原API冒烟测试；完整自动集成验证见 .github/workflows/verify.yml。ACCOUNT-ROOMS-TEST.md 为原人工测试记录表，按实际执行填写，不将自动检查结果代填为人工执行结果。
