@@ -226,6 +226,8 @@ public class BookingRuleServlet extends HttpServlet implements BookingAccess {
             update(c, "INSERT INTO slot_lock(booking_id,user_id,room_id,slot_start,slot_end) VALUES (?,?,?,?,?)",
                     id, user, room, slot, slot.plusHours(1));
         }
+        com.sws.studyroom.common.Messages.send(c,user,"booking:"+id,"BOOKING_CREATED",
+                "预约订单已生成","订单 #"+id+" 已锁定时段，请在付款截止时间前完成支付。",now);
         return "已生成待支付订单 " + id;
     }
 

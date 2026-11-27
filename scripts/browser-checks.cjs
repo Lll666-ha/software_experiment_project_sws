@@ -57,6 +57,11 @@ const check = (condition, name) => { assert.ok(condition, name); console.log('PA
       'catalog derives occupied status from the reserved slot and respects page size');
     const forbidden = await page.request.get(new URL('api/usage-feedback/admin/user-credit?user_id=1', base).href);
     check(forbidden.status() === 403, 'ordinary user cannot read another user’s credit from admin endpoint');
+    await page.locator('[data-view=messages]').click();
+    const bookingMessage=page.locator('.record').filter({has:page.getByRole('heading',{name:'预约订单已生成',exact:true})});
+    await bookingMessage.first().getByRole('button',{name:'标为已读',exact:true}).click();
+    await bookingMessage.first().getByText('已读',{exact:true}).waitFor();
+    check(true, 'booking message can be read and remains marked after refresh');
     await page.locator('[data-view=overview]').click();
     await page.locator('.overview-booking .badge.PENDING_PAYMENT').waitFor();
     await page.screenshot({ path: `${output}/desktop-overview.png`, fullPage: true });

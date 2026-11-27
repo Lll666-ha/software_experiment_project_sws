@@ -57,12 +57,17 @@ public class UsageFeedbackServlet extends HttpServlet {
             case "/appeal"->service.appeal(c,number(p,"booking_id"),number(p,"violation_id"),user,required(p,"appeal_reason"));
             case "/admin/appeal"->service.processAppeal(c,number(p,"appeal_id"),a,required(p,"decision"),required(p,"admin_opinion"));
             case "/admin/fault"->service.processFault(c,number(p,"fault_id"),a,required(p,"fault_status"),required(p,"admin_opinion"));
+            case "/messages/read"->{
+                Messages.markRead(c,user,number(p,"message_id"),service.now());
+                yield Map.of("ok",true);
+            }
             default->throw new UsageService.Failure(404,"接口不存在");
         };
     }
     private Object read(Connection c,SessionIdentity a,String path,Map<String,String> p)throws SQLException{
         return switch(path){
             case "/me/credit"->service.credit(c,a.userId());
+            case "/messages"->Messages.inbox(c,a.userId(),ListPage.parse(p.get("page"),p.get("page_size")));
             case "/admin/user-credit"->{
                 if (a.role() != SessionIdentity.Role.SUPER_ADMIN)
                     throw new UsageService.Failure(403,"仅超级管理员可查询用户信用");

@@ -50,9 +50,9 @@ function requireIdentityPage(title) { return heading(title,'登录后查看与�
 async function render() {
     const version=++renderId;
     const requested=location.hash.slice(1)||new URLSearchParams(location.search).get('view')||'overview';
-    state.view=['overview','rooms','orders','credit','feedback','admin','account','help','usage'].includes(requested)?requested:'overview';
+    state.view=['overview','rooms','orders','credit','feedback','messages','admin','account','help','usage'].includes(requested)?requested:'overview';
     if(state.view==='usage')state.view='orders';
-    const titles={overview:'预约总览',rooms:'探索空间',orders:'我的预约',credit:'信用记录',feedback:'反馈与申诉',admin:'管理工作台',account:'我的账户',help:'使用指南'};
+    const titles={overview:'预约总览',rooms:'探索空间',orders:'我的预约',credit:'信用记录',feedback:'反馈与申诉',messages:'站内信',admin:'管理工作台',account:'我的账户',help:'使用指南'};
     $('#breadcrumb').textContent=titles[state.view];document.title=`${titles[state.view]} · 研间`;
     document.querySelectorAll('.nav a').forEach(a=>{
         const active=a.dataset.view===state.view;
@@ -63,8 +63,8 @@ async function render() {
     $('#content').innerHTML='<div class="loading"><span class="spinner"></span>正在加载</div>';
     try {
         let html;
-        if(['orders','credit','feedback','admin','account'].includes(state.view)&&!state.identity.authenticated)html=requireIdentityPage(titles[state.view]);
-        else html=await ({overview:renderOverview,rooms:renderRooms,orders:renderOrders,credit:renderCredit,feedback:renderFeedback,admin:renderAdmin,account:renderAccount,help:renderHelp}[state.view])();
+        if(['orders','credit','feedback','messages','admin','account'].includes(state.view)&&!state.identity.authenticated)html=requireIdentityPage(titles[state.view]);
+        else html=await ({overview:renderOverview,rooms:renderRooms,orders:renderOrders,credit:renderCredit,feedback:renderFeedback,messages:renderMessages,admin:renderAdmin,account:renderAccount,help:renderHelp}[state.view])();
         if(version!==renderId)return;$('#content').innerHTML=html;
     }catch(error){if(version!==renderId)return;$('#content').innerHTML=heading(titles[state.view],'')+`<div class="panel">${empty('暂时无法加载',error.message,button('重新加载','refresh'))}</div>`;}
 }
@@ -248,6 +248,15 @@ async function renderFeedback() {
     const records=data.map(item=>{const isAppeal=tab==='appeals';return `<article class="record"><div class="record-head"><h3>${isAppeal?'预约 '+e(item.booking_id)+' 的申诉':'房间 '+e(item.room_id)+' 的报障'}</h3>${badge(isAppeal?item.appeal_status:item.fault_status)}<small>${e(dateText(item.created_at))}</small></div><p>${e(isAppeal?item.appeal_reason:item.fault_desc)}</p>${item.admin_opinion?`<p><b>处理意见：</b>${e(item.admin_opinion)}</p>`:''}</article>`;}).join('');
     return heading('你的反馈，让空间更好','上报使用中的问题，查看故障处理与申诉进度。',button(`${icon('plus')}上报故障`,'fault','',true))+`<div class="tabs"><button class="tab ${tab==='faults'?'active':''}" data-action="feedback-tab" data-id="faults">我的报障</button><button class="tab ${tab==='appeals'?'active':''}" data-action="feedback-tab" data-id="appeals">我的申诉</button></div><div class="panel">${records||empty(tab==='appeals'?'暂无申诉记录':'暂无报障记录',tab==='appeals'?'如对违约记录有异议，可从信用记录发起申诉。':'如果使用中遇到设备或环境问题，可以在这里反馈。',tab==='appeals'?'<a class="btn" href="#credit">查看信用记录</a>':'')}</div>`;
 }
+async function renderMessages() {
+    const result=await feedback('/messages',{data:{page:state.messagePage||1}});
+    const messages=result.items.map(message=>`<article class="record">
+        <div class="record-head"><h3>${e(message.title)}</h3><small>${e(dateText(message.sent_at))}</small></div>
+        <p>${e(message.content)}</p>
+        ${message.read_at?'<small>已读</small>':button('标为已读','message-read',`data-id="${e(message.message_id)}"`)}
+        </article>`).join('');
+    return heading('站内信','')+`<section class="panel">${messages||empty('暂无站内信','')}${paging(result,'message-page')}</section>`;
+}
 async function renderAdmin() {
     if(state.identity.role==='USER')return heading('管理工作台','')+`<div class="panel">${empty('当前账号无管理权限','请使用管理员账号登录。')}</div>`;
     const superAdmin=state.identity.role==='SUPER_ADMIN';
@@ -348,6 +357,8 @@ document.addEventListener('click',async event=>{
         else if(action==='admin-catalog-page'){state.adminRoomFilters={...state.adminRoomFilters,page:id};await render();}
         else if(action==='room-reviews')await roomReviewHistory(id);
         else if(action==='room-details')await roomDetails(id);
+        else if(action==='message-page'){state.messagePage=id;await render();}
+        else if(action==='message-read'){await postFeedback('/messages/read',{message_id:id});await render();}
         else if(action==='review-page'&&state.reviewSearch)await roomReviewHistory(state.reviewSearch.roomId,{...state.reviewSearch.params,page:id});
         else if(['pay','cancel','refund','checkin','door','finish','review'].includes(action))await orderAction(action,id);
         else if(action==='order-tab'){state.orderTab=id;await render();}

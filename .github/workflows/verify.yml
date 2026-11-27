@@ -32,7 +32,7 @@ jobs:
           cache: maven
       - name: Create isolated schema and check repeatable migration
         run: |
-          for script in db/init.sql db/prepare-legacy-account-rooms.sql db/account-rooms.sql db/booking-rules.sql db/usage-feedback.sql db/migrate-unified-fields.sql db/migrate-unified-fields.sql; do
+          for script in db/init.sql db/prepare-legacy-account-rooms.sql db/account-rooms.sql db/booking-rules.sql db/usage-feedback.sql db/migrate-unified-fields.sql db/migrate-unified-fields.sql db/notifications.sql db/notifications.sql; do
             mysql --default-character-set=utf8mb4 -h 127.0.0.1 -u root < "$script"
           done
       - name: Check legacy database migration preserves records
