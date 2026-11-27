@@ -2,7 +2,7 @@
 const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
 const fs = require('node:fs');
 const assert = require('node:assert/strict');
-const output = '.artifacts';
+const output = 'ui-verification';
 const base = process.env.SWS_BROWSER_URL || 'http://127.0.0.1:8080/studyroom/';
 const check = (condition, name) => { assert.ok(condition, name); console.log('PASS browser:', name); };
 (async () => {
