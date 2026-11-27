@@ -25,12 +25,21 @@ final class RoomCatalog {
                   OR ? > TIMESTAMP(DATE(?),TIME(SUBSTRING_INDEX(r.opening_hours,'-',-1))) THEN 'CLOSED'
              ELSE 'AVAILABLE' END AS availability
         """;
+    private static final String SELECT_ROOMS = "SELECT r.room_id,r.room_name,r.location,r.capacity,r.opening_hours,"
+            + "r.listing_status,r.maintenance_status,r.manager_user_id,p.has_projector,p.has_whiteboard,"
+            + "p.has_outlets,p.has_multimedia,p.equipment_details,p.usage_rules,p.panorama_url," + STATUS
+            + " FROM room r LEFT JOIN room_profile p ON p.room_id=r.room_id WHERE 1=1";
 
     private RoomCatalog() {}
 
-    static Map<String, Object> search(Connection c, HttpServletRequest request, SessionIdentity admin)
+    static Map<String, Object> detail(Connection c, HttpServletRequest request, long roomId)
             throws SQLException {
-        ListPage page = ListPage.parse(request.getParameter("page"), request.getParameter("page_size"));
+        var args = statusArgs(request);
+        args.add(roomId);
+        return Sql.one(c, SELECT_ROOMS + " AND r.listing_status='LISTED' AND r.room_id=?", args.toArray());
+    }
+
+    private static ArrayList<Object> statusArgs(HttpServletRequest request) {
         LocalDateTime now = LocalDateTime.now(SHANGHAI);
         LocalDateTime start = now, end = now.plusSeconds(1);
         String rawStart = param(request, "start_time"), rawEnd = param(request, "end_time");
@@ -44,11 +53,14 @@ final class RoomCatalog {
             if (!start.isBefore(end) || !start.toLocalDate().equals(end.minusNanos(1).toLocalDate()))
                 throw new IllegalArgumentException("请选择同一天内有效的时段");
         }
-        var args = new ArrayList<Object>(List.of(end, start, now, start, start, end, start));
-        StringBuilder sql = new StringBuilder("SELECT r.room_id,r.room_name,r.location,r.capacity,r.opening_hours,"
-                + "r.listing_status,r.maintenance_status,r.manager_user_id,p.has_projector,p.has_whiteboard,"
-                + "p.has_outlets,p.usage_rules,p.panorama_url," + STATUS
-                + " FROM room r LEFT JOIN room_profile p ON p.room_id=r.room_id WHERE 1=1");
+        return new ArrayList<>(List.of(end, start, now, start, start, end, start));
+    }
+
+    static Map<String, Object> search(Connection c, HttpServletRequest request, SessionIdentity admin)
+            throws SQLException {
+        ListPage page = ListPage.parse(request.getParameter("page"), request.getParameter("page_size"));
+        var args = statusArgs(request);
+        StringBuilder sql = new StringBuilder(SELECT_ROOMS);
         if (admin == null) sql.append(" AND r.listing_status='LISTED'");
         else if (admin.role() == SessionIdentity.Role.ROOM_ADMIN) {
             sql.append(" AND r.manager_user_id=?");
@@ -67,7 +79,7 @@ final class RoomCatalog {
             if (minimum < 1 || minimum > 10000) throw new IllegalArgumentException("人数无效");
             sql.append(" AND r.capacity>=?"); args.add(minimum);
         }
-        for (String equipment : List.of("has_projector", "has_whiteboard", "has_outlets")) {
+        for (String equipment : List.of("has_projector", "has_whiteboard", "has_outlets", "has_multimedia")) {
             String requested = param(request, equipment);
             if (requested.isEmpty()) continue;
             if (!requested.equals("1")) throw new IllegalArgumentException("设备筛选值无效");
@@ -97,7 +109,10 @@ final class RoomCatalog {
         if (request.getParameter("profile_present") == null) return;
         String rules = request.getParameter("usage_rules");
         String panorama = request.getParameter("panorama_url");
+        String equipmentDetails = request.getParameter("equipment_details");
         if (rules != null && rules.length() > 500) throw new IllegalArgumentException("使用说明最多 500 字");
+        if (equipmentDetails != null && equipmentDetails.length() > 200)
+            throw new IllegalArgumentException("设备补充说明最多 200 字");
         if (panorama != null && !panorama.isBlank()) {
             try {
                 var uri = java.net.URI.create(panorama);
@@ -109,14 +124,17 @@ final class RoomCatalog {
             }
         }
         Sql.update(c, """
-            INSERT INTO room_profile(room_id,has_projector,has_whiteboard,has_outlets,usage_rules,panorama_url)
-            VALUES (?,?,?,?,?,?) AS requested
+            INSERT INTO room_profile(room_id,has_projector,has_whiteboard,has_outlets,has_multimedia,
+                equipment_details,usage_rules,panorama_url)
+            VALUES (?,?,?,?,?,?,?,?) AS requested
             ON DUPLICATE KEY UPDATE has_projector=requested.has_projector,
                 has_whiteboard=requested.has_whiteboard,has_outlets=requested.has_outlets,
+                has_multimedia=requested.has_multimedia,equipment_details=requested.equipment_details,
                 usage_rules=requested.usage_rules,panorama_url=requested.panorama_url
             """, roomId, "1".equals(request.getParameter("has_projector")),
                 "1".equals(request.getParameter("has_whiteboard")), "1".equals(request.getParameter("has_outlets")),
-                blankToNull(rules),blankToNull(panorama));
+                "1".equals(request.getParameter("has_multimedia")), blankToNull(equipmentDetails),
+                blankToNull(rules), blankToNull(panorama));
     }
 
     private static String blankToNull(String text) {

@@ -4,12 +4,12 @@ Java 17、Maven、Tomcat 10.1、MySQL 8，三人课程项目。
 
 ## 运行
 
-1. 按 `FIELD-CONTRACT.md` 的顺序建库或迁移历史库，再执行 `db/notifications.sql` 、`db/room-details.sql` 和 `db/lifecycle-details.sql`，启用站内信、房间详情、账号验证和退款状态。需要演示房间时，可额外执行 `db/add-demo-rooms.sql`。
+1. 按 `FIELD-CONTRACT.md` 的顺序建库或迁移历史库，再执行 `db/notifications.sql` 和 `db/lifecycle-details.sql`。如需 12 间扩展演示房间，先执行 `db/add-demo-rooms.sql`。最后执行 `db/room-details.sql`，为已存在的课程演示房间补录设备与使用规则。该脚本可重复运行，并保留管理员已录入的房间配置。
 2. 设置 `SWS_DB_URL`、`SWS_DB_USER`、`SWS_DB_PASSWORD`。示例URL：`jdbc:mysql://localhost:3306/studyroom?serverTimezone=Asia/Shanghai`。
 3. `mvn clean verify`，将 `target/studyroom.war` 部署至 Tomcat 10.1。
 4. 访问 `/studyroom/`。账号与房间、预约与规则、使用与反馈保留独立入口。
 
-新注册用户为 USER，初始信用300。课程演示房管 `room_admin / Admin@123456` 管理9101、9102。超级管理员由数据库管理者为已注册账号分配 SUPER_ADMIN 角色，不开放自行提权接口。支付、退款、验证码和门禁按课程要求模拟。
+新注册用户为 USER，初始信用300。课程演示房管管理 9101、9102 两间预置房间。超级管理员由数据库管理者为已注册账号分配 SUPER_ADMIN 角色，不开放自行提权接口。支付、退款、验证码和门禁按课程要求模拟。
 
 ## 文档与验证
 
