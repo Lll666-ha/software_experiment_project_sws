@@ -89,6 +89,8 @@ public final class UsageService implements CreditAccess {
                 changeCredit(c, b.userId(), "timeout:" + bookingId, -value(r, "timeout_deduct"), "TIMEOUT", value(r, "credit_suspend_days"));
                 insert(c, "INSERT INTO violation(booking_id,user_id,violation_type,credit_deduct,is_revoked,created_at) VALUES (?,?,'NO_SHOW',?,0,?)",
                         bookingId, b.userId(), old - findScore(c, b.userId()), now);
+                com.sws.studyroom.common.Messages.send(c,b.userId(),"booking:"+bookingId,"NO_SHOW",
+                        "未签到，房间已释放","订单 #"+bookingId+" 超过签到时限，扣除 "+(old-findScore(c,b.userId()))+" 分。",now);
             }
         } else if (b.bookingStatus() == BookingStatus.IN_USE && !now.isBefore(b.endTime())) {
             if (bookings.release(c, bookingId, BookingStatus.IN_USE, ReleaseReason.ENDED, "ended:" + bookingId))
@@ -143,8 +145,12 @@ public final class UsageService implements CreditAccess {
     }
     public Map<String, Object> fault(Connection c, long room, long user, String description) throws SQLException {
         check(!description.isBlank() && description.length() <= 500, 400, "故障描述需为1至500字");
-        check(one(c, "SELECT room_id FROM room WHERE room_id=?", room) != null, 404, "房间不存在");
+        var roomData=one(c, "SELECT room_id,manager_user_id FROM room WHERE room_id=?", room);
+        check(roomData != null, 404, "房间不存在");
         long fault = insert(c, "INSERT INTO fault(room_id,user_id,fault_desc,fault_status,created_at) VALUES (?,?,?,'PENDING',?)", room,user,description,now());
+        if (roomData.get("manager_user_id") != null)
+            com.sws.studyroom.common.Messages.send(c,id(roomData,"manager_user_id"),"fault:"+fault,
+                    "FAULT_REPORTED","收到新的房间报障","房间 #"+room+" 有一条待处理报障。请到管理工作台查看。",now());
         return one(c, "SELECT * FROM fault WHERE fault_id=?", fault);
     }
     public Map<String, Object> appeal(Connection c, long bookingId, long violation, long user, String reason) throws SQLException {
@@ -184,6 +190,8 @@ public final class UsageService implements CreditAccess {
             }
         }
         update(c,"UPDATE appeal SET appeal_status=?,admin_opinion=?,handled_by=?,handled_at=? WHERE appeal_id=?",decision,opinion,actor.userId(),now(),appealId);
+        com.sws.studyroom.common.Messages.send(c,b.userId(),"appeal:"+appealId,"APPEAL_REVIEWED",
+                "申诉复核已完成","订单 #"+b.bookingId()+" 的申诉"+(decision.equals("APPROVED")?"已通过":"已驳回")+"。请到反馈与申诉查看详情。",now());
         return one(c,"SELECT * FROM appeal WHERE appeal_id=?",appealId);
     }
     public Map<String, Object> processFault(Connection c, long faultId, SessionIdentity actor, String next, String opinion) throws SQLException {

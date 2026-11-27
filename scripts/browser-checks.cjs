@@ -45,6 +45,23 @@ const check = (condition, name) => { assert.ok(condition, name); console.log('PA
     await page.getByRole('button', { name: '确认预约', exact: true }).click();
     await page.locator('.order-card .badge.PENDING_PAYMENT').waitFor();
     check(true, 'booking form creates an actual unpaid order');
+    const query = new URL('api/account-rooms/catalog', base);
+    query.search = new URLSearchParams({
+      start_time: `${tomorrow}T10:00`, end_time: `${tomorrow}T11:00`,
+      availability: 'OCCUPIED', page_size: '50'
+    }).toString();
+    const occupied = await page.request.get(query.href);
+    assert.equal(occupied.status(), 200, await occupied.text());
+    const catalog = await occupied.json();
+    check(catalog.page_size === 50 && catalog.items.some(room => room.room_id === '9101' && room.availability === 'OCCUPIED'),
+      'catalog derives occupied status from the reserved slot and respects page size');
+    const forbidden = await page.request.get(new URL('api/usage-feedback/admin/user-credit?user_id=1', base).href);
+    check(forbidden.status() === 403, 'ordinary user cannot read another user’s credit from admin endpoint');
+    await page.locator('[data-view=messages]').click();
+    const bookingMessage=page.locator('.record').filter({has:page.getByRole('heading',{name:'预约订单已生成',exact:true})});
+    await bookingMessage.first().getByRole('button',{name:'标为已读',exact:true}).click();
+    await bookingMessage.first().getByText('已读',{exact:true}).waitFor();
+    check(true, 'booking message can be read and remains marked after refresh');
     await page.locator('[data-view=overview]').click();
     await page.locator('.overview-booking .badge.PENDING_PAYMENT').waitFor();
     await page.screenshot({ path: `${output}/desktop-overview.png`, fullPage: true });
@@ -60,6 +77,16 @@ const check = (condition, name) => { assert.ok(condition, name); console.log('PA
     await page.locator('.order-card .badge.CANCELLED').waitFor();
     check(true, 'refund quote and confirmation complete');
     await page.screenshot({ path: `${output}/desktop-orders.png`, fullPage: true });
+    await page.locator('[data-view=rooms]').click();
+    await page.locator('.room-card [data-action=room-details]').first().click();
+    await page.getByRole('button', { name: '历史评价', exact: true }).click();
+    await page.locator('#room-review-search').waitFor();
+    await page.locator('#room-review-search [name=score_1]').selectOption('5');
+    await page.locator('#room-review-search [name=from]').fill('2099-01-01');
+    await page.getByRole('button', { name: '筛选评价', exact: true }).click();
+    await page.getByRole('heading', { name: '暂无匹配评价', exact: true }).waitFor();
+    check(true, 'room detail opens historical reviews and accepts combined rating and date filters');
+    await page.keyboard.press('Escape');
     await page.locator('[data-view=credit]').click();
     await page.locator('.credit-score').waitFor();
     check((await page.locator('.credit-score').innerText()).includes('300'), 'credit page reads actual initial score');
@@ -81,6 +108,16 @@ const check = (condition, name) => { assert.ok(condition, name); console.log('PA
     await page.locator('[data-view=admin]').click();
     await page.locator('.data-table tbody tr').first().waitFor();
     check(await page.getByRole('button', { name: '规则配置', exact: true }).count() === 0, 'room administrator does not get super-admin rule controls');
+    await page.locator('.data-table [data-action=room-edit][data-id="9101"]').click();
+    await page.locator('#room-form [name=has_projector]').check();
+    await page.locator('#room-form [name=usage_rules]').fill('离开时请关闭投影仪。');
+    await page.getByRole('button',{name:'保存空间',exact:true}).click();
+    await page.locator('#modal').waitFor({state:'hidden'});
+    const equipmentResponse=await page.request.get(new URL('api/account-rooms/catalog?has_projector=1',base).href);
+    assert.equal(equipmentResponse.status(),200,await equipmentResponse.text());
+    const equipmentRooms=(await equipmentResponse.json()).items;
+    check(equipmentRooms.some(room=>room.room_id==='9101' && room.usage_rules==='离开时请关闭投影仪。'),
+      'administrators can edit room details and users can search by equipment');
     await page.getByRole('button', { name: '故障处理', exact: true }).click();
     await page.locator('[data-action=process-fault]').first().click();
     await page.locator('#process-record-form [name=admin_opinion]').fill('已安排检查设备');

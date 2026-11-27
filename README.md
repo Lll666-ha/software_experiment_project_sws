@@ -4,7 +4,7 @@ Java 17、Maven、Tomcat 10.1、MySQL 8，三人课程项目。
 
 ## 运行
 
-1. 按 `FIELD-CONTRACT.md` 的顺序建库或迁移历史库。
+1. 按 `FIELD-CONTRACT.md` 的顺序建库或迁移历史库，再执行 `db/notifications.sql` 和 `db/room-details.sql`，启用站内信和房间详情。需要演示房间时，可额外执行 `db/add-demo-rooms.sql`。
 2. 设置 `SWS_DB_URL`、`SWS_DB_USER`、`SWS_DB_PASSWORD`。示例URL：`jdbc:mysql://localhost:3306/studyroom?serverTimezone=Asia/Shanghai`。
 3. `mvn clean verify`，将 `target/studyroom.war` 部署至 Tomcat 10.1。
 4. 访问 `/studyroom/`。账号与房间、预约与规则、使用与反馈保留独立入口。

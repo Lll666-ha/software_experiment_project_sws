@@ -57,20 +57,64 @@ public class UsageFeedbackServlet extends HttpServlet {
             case "/appeal"->service.appeal(c,number(p,"booking_id"),number(p,"violation_id"),user,required(p,"appeal_reason"));
             case "/admin/appeal"->service.processAppeal(c,number(p,"appeal_id"),a,required(p,"decision"),required(p,"admin_opinion"));
             case "/admin/fault"->service.processFault(c,number(p,"fault_id"),a,required(p,"fault_status"),required(p,"admin_opinion"));
+            case "/messages/read"->{
+                Messages.markRead(c,user,number(p,"message_id"),service.now());
+                yield Map.of("ok",true);
+            }
             default->throw new UsageService.Failure(404,"接口不存在");
         };
     }
     private Object read(Connection c,SessionIdentity a,String path,Map<String,String> p)throws SQLException{
         return switch(path){
             case "/me/credit"->service.credit(c,a.userId());
+            case "/messages"->Messages.inbox(c,a.userId(),ListPage.parse(p.get("page"),p.get("page_size")));
+            case "/admin/user-credit"->{
+                if (a.role() != SessionIdentity.Role.SUPER_ADMIN)
+                    throw new UsageService.Failure(403,"仅超级管理员可查询用户信用");
+                yield service.credit(c,number(p,"user_id"));
+            }
             case "/me/appeals"->rows(c,"SELECT * FROM appeal WHERE user_id=? ORDER BY appeal_id DESC LIMIT 100",a.userId());
             case "/me/faults"->rows(c,"SELECT * FROM fault WHERE user_id=? ORDER BY fault_id DESC LIMIT 100",a.userId());
             case "/admin/faults"->service.adminList(c,a,"faults");
             case "/admin/appeals"->service.adminList(c,a,"appeals");
             case "/reviews"->{int page=Integer.parseInt(p.getOrDefault("page","1"));if(page<1||page>10000)throw new IllegalArgumentException("页码需为1至10000");
                 yield rows(c,"SELECT v.score_1,v.score_2,v.comment,v.created_at FROM review v JOIN booking b USING(booking_id) WHERE b.room_id=? ORDER BY v.created_at DESC,v.review_id DESC LIMIT 20 OFFSET ?",number(p,"room_id"),(page-1)*20);}
+            case "/room-review-history"->reviewHistory(c,p);
             default->throw new UsageService.Failure(404,"接口不存在");
         };
+    }
+    private Object reviewHistory(Connection c, Map<String, String> params) throws SQLException {
+        long room = number(params, "room_id");
+        if (one(c, "SELECT room_id FROM room WHERE room_id=? AND listing_status='LISTED'", room) == null)
+            throw new UsageService.Failure(404, "房间不存在或已下架");
+        ListPage page = ListPage.parse(params.get("page"), params.get("page_size"));
+        StringBuilder where = new StringBuilder(" FROM review v JOIN booking b USING(booking_id) WHERE b.room_id=?");
+        List<Object> args = new ArrayList<>();
+        args.add(room);
+        for (String score : List.of("score_1", "score_2")) {
+            String raw = params.getOrDefault(score, "");
+            if (raw.isBlank()) continue;
+            int value = Integer.parseInt(raw);
+            if (value < 1 || value > 5) throw new IllegalArgumentException("评分必须为 1 到 5");
+            where.append(" AND v.").append(score).append("=?");
+            args.add(value);
+        }
+        try {
+            String from = params.getOrDefault("from", ""), to = params.getOrDefault("to", "");
+            var start = from.isBlank() ? null : java.time.LocalDate.parse(from);
+            var end = to.isBlank() ? null : java.time.LocalDate.parse(to);
+            if (start != null && end != null && end.isBefore(start))
+                throw new IllegalArgumentException("结束日期不能早于开始日期");
+            if (start != null) { where.append(" AND v.created_at>=?"); args.add(start.atStartOfDay()); }
+            if (end != null) { where.append(" AND v.created_at<?"); args.add(end.plusDays(1).atStartOfDay()); }
+        } catch (java.time.DateTimeException ex) {
+            throw new IllegalArgumentException("评价日期格式无效", ex);
+        }
+        Number total = (Number) one(c, "SELECT COUNT(*) AS total" + where, args.toArray()).get("total");
+        args.add(page.size()); args.add(page.offset());
+        var result = rows(c, "SELECT v.score_1,v.score_2,v.comment,v.created_at" + where
+                + " ORDER BY v.created_at DESC,v.review_id DESC LIMIT ? OFFSET ?", args.toArray());
+        return page.result(result, total);
     }
     private static String required(Map<String,String> p,String k){String v=p.get(k);if(v==null||v.isBlank())throw new IllegalArgumentException("请填写 "+k);return v.trim();}
     private static long number(Map<String,String> p,String k){long v=Long.parseLong(required(p,k));if(v<1)throw new IllegalArgumentException("编号需为正整数");return v;}

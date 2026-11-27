@@ -90,6 +90,8 @@ public class AccountRoomServlet extends HttpServlet implements ModuleContracts.R
         return switch (path) {
             case "/rooms" -> rooms(c, r, false);
             case "/admin/rooms" -> { requireAdmin(r); yield rooms(c, r, true); }
+            case "/catalog" -> com.sws.studyroom.common.Json.encode(RoomCatalog.search(c, r, null));
+            case "/admin/catalog" -> com.sws.studyroom.common.Json.encode(RoomCatalog.search(c, r, requireAdmin(r)));
             default -> throw new Failure(404, "接口不存在");
         };
     }
@@ -239,7 +241,12 @@ public class AccountRoomServlet extends HttpServlet implements ModuleContracts.R
                     "INSERT INTO room(room_name,location,capacity,opening_hours,manager_user_id) VALUES (?,?,?,?,?)",
                     Statement.RETURN_GENERATED_KEYS)) {
                 bind(p, name, location, capacity, hours, manager); p.executeUpdate();
-                try (ResultSet keys = p.getGeneratedKeys()) { keys.next(); return "{\"message\":\"房间新增成功\",\"room_id\":\"" + keys.getLong(1) + "\"}"; }
+                try (ResultSet keys = p.getGeneratedKeys()) {
+                    if (!keys.next()) throw new SQLException("缺少新房间编号");
+                    long newRoomId = keys.getLong(1);
+                    RoomCatalog.saveProfile(c,r,newRoomId);
+                    return "{\"message\":\"房间新增成功\",\"room_id\":\"" + newRoomId + "\"}";
+                }
             }
         }
         String scope = identity.role() == SessionIdentity.Role.ROOM_ADMIN ? " AND manager_user_id=?" : "";
@@ -248,6 +255,7 @@ public class AccountRoomServlet extends HttpServlet implements ModuleContracts.R
             if (!scope.isEmpty()) p.setLong(7, identity.userId());
             if (p.executeUpdate() != 1) throw new Failure(404, "房间不存在或不在管理范围内");
         }
+        RoomCatalog.saveProfile(c,r,id);
         return message("房间修改成功");
     }
 
