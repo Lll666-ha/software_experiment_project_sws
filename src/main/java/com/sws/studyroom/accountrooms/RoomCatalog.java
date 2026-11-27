@@ -46,7 +46,9 @@ final class RoomCatalog {
         }
         var args = new ArrayList<Object>(List.of(end, start, now, start, start, end, start));
         StringBuilder sql = new StringBuilder("SELECT r.room_id,r.room_name,r.location,r.capacity,r.opening_hours,"
-                + "r.listing_status,r.maintenance_status,r.manager_user_id," + STATUS + " FROM room r WHERE 1=1");
+                + "r.listing_status,r.maintenance_status,r.manager_user_id,p.has_projector,p.has_whiteboard,"
+                + "p.has_outlets,p.usage_rules,p.panorama_url," + STATUS
+                + " FROM room r LEFT JOIN room_profile p ON p.room_id=r.room_id WHERE 1=1");
         if (admin == null) sql.append(" AND r.listing_status='LISTED'");
         else if (admin.role() == SessionIdentity.Role.ROOM_ADMIN) {
             sql.append(" AND r.manager_user_id=?");
@@ -64,6 +66,12 @@ final class RoomCatalog {
             int minimum = Integer.parseInt(capacity);
             if (minimum < 1 || minimum > 10000) throw new IllegalArgumentException("人数无效");
             sql.append(" AND r.capacity>=?"); args.add(minimum);
+        }
+        for (String equipment : List.of("has_projector", "has_whiteboard", "has_outlets")) {
+            String requested = param(request, equipment);
+            if (requested.isEmpty()) continue;
+            if (!requested.equals("1")) throw new IllegalArgumentException("设备筛选值无效");
+            sql.append(" AND p.").append(equipment).append("=TRUE");
         }
         String status = param(request, "availability");
         String outer = " FROM (" + sql + ") catalog";
@@ -83,6 +91,36 @@ final class RoomCatalog {
         args.add(page.size()); args.add(page.offset());
         var items = Sql.rows(c, "SELECT *" + outer + " ORDER BY " + order + " LIMIT ? OFFSET ?", args.toArray());
         return page.result(items,total);
+    }
+
+    static void saveProfile(Connection c, HttpServletRequest request, long roomId) throws SQLException {
+        if (request.getParameter("profile_present") == null) return;
+        String rules = request.getParameter("usage_rules");
+        String panorama = request.getParameter("panorama_url");
+        if (rules != null && rules.length() > 500) throw new IllegalArgumentException("使用说明最多 500 字");
+        if (panorama != null && !panorama.isBlank()) {
+            try {
+                var uri = java.net.URI.create(panorama);
+                if (panorama.length() > 512 || !"https".equalsIgnoreCase(uri.getScheme())
+                        || uri.getHost() == null || uri.getUserInfo() != null)
+                    throw new IllegalArgumentException();
+            } catch (IllegalArgumentException ex) {
+                throw new IllegalArgumentException("全景照片须填写有效的 HTTPS 图片链接");
+            }
+        }
+        Sql.update(c, """
+            INSERT INTO room_profile(room_id,has_projector,has_whiteboard,has_outlets,usage_rules,panorama_url)
+            VALUES (?,?,?,?,?,?) AS requested
+            ON DUPLICATE KEY UPDATE has_projector=requested.has_projector,
+                has_whiteboard=requested.has_whiteboard,has_outlets=requested.has_outlets,
+                usage_rules=requested.usage_rules,panorama_url=requested.panorama_url
+            """, roomId, "1".equals(request.getParameter("has_projector")),
+                "1".equals(request.getParameter("has_whiteboard")), "1".equals(request.getParameter("has_outlets")),
+                blankToNull(rules),blankToNull(panorama));
+    }
+
+    private static String blankToNull(String text) {
+        return text == null || text.isBlank() ? null : text.trim();
     }
 
     private static String param(HttpServletRequest request, String key) {

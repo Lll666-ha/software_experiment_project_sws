@@ -108,6 +108,16 @@ const check = (condition, name) => { assert.ok(condition, name); console.log('PA
     await page.locator('[data-view=admin]').click();
     await page.locator('.data-table tbody tr').first().waitFor();
     check(await page.getByRole('button', { name: '规则配置', exact: true }).count() === 0, 'room administrator does not get super-admin rule controls');
+    await page.locator('.data-table [data-action=room-edit][data-id="9101"]').click();
+    await page.locator('#room-form [name=has_projector]').check();
+    await page.locator('#room-form [name=usage_rules]').fill('离开时请关闭投影仪。');
+    await page.getByRole('button',{name:'保存空间',exact:true}).click();
+    await page.locator('#modal').waitFor({state:'hidden'});
+    const equipmentResponse=await page.request.get(new URL('api/account-rooms/catalog?has_projector=1',base).href);
+    assert.equal(equipmentResponse.status(),200,await equipmentResponse.text());
+    const equipmentRooms=(await equipmentResponse.json()).items;
+    check(equipmentRooms.some(room=>room.room_id==='9101' && room.usage_rules==='离开时请关闭投影仪。'),
+      'administrators can edit room details and users can search by equipment');
     await page.getByRole('button', { name: '故障处理', exact: true }).click();
     await page.locator('[data-action=process-fault]').first().click();
     await page.locator('#process-record-form [name=admin_opinion]').fill('已安排检查设备');

@@ -13,6 +13,8 @@
 .catalog-paging small { margin-right: auto; }
 .room-review-results, .admin-credit-records { margin-top: 18px; }
 .room-card .room-body > .badge { display: inline-block; margin-bottom: 8px; }
+.room-panorama { display: block; width: 100%; max-height: 250px; object-fit: contain; margin-bottom: 12px; }
+.form-grid input[type="checkbox"] { width: auto; min-width: auto; min-height: auto; }
 .badge.AVAILABLE { background: #dff4ec; color: #176247; }
 .badge.OCCUPIED, .badge.MAINTENANCE { background: #fff0d9; color: #744406; }
 .workspace { background: linear-gradient(148deg, #ddebf8, var(--bg) 400px); }

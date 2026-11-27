@@ -140,6 +140,11 @@ async function renderOverview() {
         </section>`;
 }
 const availabilityLabels = {AVAILABLE:'空闲',OCCUPIED:'已占用',MAINTENANCE:'维护中',CLOSED:'未开放',UNLISTED:'已下架'};
+const roomEquipment = [['has_projector','投影仪'],['has_whiteboard','白板'],['has_outlets','插座']];
+function equipmentOptions(values) {
+    return roomEquipment.map(([key,title])=>`<label><span><input type="checkbox" name="${key}" value="1"
+        ${Number(values[key])===1?'checked':''}> ${title}</span></label>`).join('');
+}
 function filterSelect(name, title, options, value) {
     return `<label>${title}<select name="${name}">${options.map(([key, title]) =>
         `<option value="${e(key)}" ${String(key)===String(value??'')?'selected':''}>${e(title)}</option>`).join('')}</select></label>`;
@@ -161,7 +166,7 @@ function catalogFilters(id, params, admin=false) {
         ${filterSelect('availability','状态',[['','全部'],...Object.entries(availabilityLabels).filter(([key])=>admin||key!=='UNLISTED')],params.availability)}
         ${filterSelect('sort','排序',[['id','房间编号'],['name','名称'],['capacity','容量从小到大'],['location','位置']],params.sort)}
         ${admin?'':`<label>开始时间<input name="start_time" type="datetime-local" value="${e(params.start_time)}"></label><label>结束时间<input name="end_time" type="datetime-local" value="${e(params.end_time)}"></label>`}
-        ${pageSize(params.page_size)}
+        ${pageSize(params.page_size)}${admin?'':equipmentOptions(params)}
         </div><div class="form-actions"><button class="btn primary">查询</button></div></form>`;
 }
 async function renderRooms() {
@@ -190,14 +195,19 @@ async function roomDetails(roomId) {
     if (!room) throw new Error('房间列表已变化，请刷新后再试。');
     if (!state.rule) await loadRule();
     const id = `data-id="${e(roomId)}"`;
-    showModal(room.room_name,`<div class="profile-fields">
+    const equipment=roomEquipment.filter(([key])=>Number(room[key])===1).map(([,title])=>title);
+    const panorama=room.panorama_url&&/^https:\/\//i.test(room.panorama_url)
+        ? `<img class="room-panorama" src="${e(room.panorama_url)}" alt="${e(room.room_name)}全景图" referrerpolicy="no-referrer">` : '';
+    showModal(room.room_name,`${panorama}<div class="profile-fields">
         <div><span>位置</span><b>${e(room.location)}</b></div>
         <div><span>房间编号</span><b>${e(roomId)}</b></div>
         <div><span>容量</span><b>${e(room.capacity)} 人</b></div>
         <div><span>开放时间</span><b>${e(room.opening_hours)}</b></div>
         <div><span>当前查询状态</span><b>${e(availabilityLabels[room.availability])}</b></div>
+        <div><span>设备</span><b>${equipment.length?equipment.join('、'):'暂无设备信息'}</b></div>
         <div><span>预约费用</span><b>¥${money(state.rule.hourly_price)} / 小时</b></div>
-        </div><p class="notice">可提前 ${e(state.rule.advance_days)} 天预约。每人每天最多 ${e(state.rule.daily_slots)} 个时段。</p>
+        </div>${room.usage_rules?`<p class="notice">${e(room.usage_rules)}</p>`:''}
+        <p class="notice">可提前 ${e(state.rule.advance_days)} 天预约。每人每天最多 ${e(state.rule.daily_slots)} 个时段。</p>
         <div class="form-actions">${button('历史评价','room-reviews',id)}
         ${room.maintenance_status==='NORMAL'?button('预约空间','reserve',id,true):''}</div>`);
 }
@@ -339,7 +349,17 @@ function appealModal(id) {
 }
 function editRoom(id) {
     const room=state.adminRooms.find(r=>r.room_id===id)||{};
-    showModal(id?'编辑研讨空间':'新增研讨空间',`<form id="room-form"><div class="form-grid"><input type="hidden" name="room_id" value="${e(room.room_id||'')}"><label class="full">空间名称<input name="room_name" maxlength="80" value="${e(room.room_name)}" required></label><label class="full">位置<input name="location" maxlength="160" value="${e(room.location)}" required></label><label>容纳人数<input name="capacity" type="number" min="1" max="10000" value="${e(room.capacity||4)}" required></label><label>开放时间<input name="opening_hours" pattern="[0-9]{2}:[0-9]{2}-[0-9]{2}:[0-9]{2}" value="${e(room.opening_hours||'08:00-22:00')}" required></label>${state.identity.role==='SUPER_ADMIN'?`<label class="full">负责管理员编号<input name="manager_user_id" inputmode="numeric" pattern="[0-9]+" value="${e(room.manager_user_id)}" placeholder="填写可用管理员编号；可留空"></label>`:''}</div><div class="form-actions"><button class="btn primary">保存空间</button></div></form>`);
+    showModal(id?'编辑研讨空间':'新增研讨空间',`<form id="room-form"><div class="form-grid">
+        <input type="hidden" name="room_id" value="${e(room.room_id||'')}"><input type="hidden" name="profile_present" value="1">
+        <label class="full">空间名称<input name="room_name" maxlength="80" value="${e(room.room_name)}" required></label>
+        <label class="full">位置<input name="location" maxlength="160" value="${e(room.location)}" required></label>
+        <label>容纳人数<input name="capacity" type="number" min="1" max="10000" value="${e(room.capacity||4)}" required></label>
+        <label>开放时间<input name="opening_hours" pattern="[0-9]{2}:[0-9]{2}-[0-9]{2}:[0-9]{2}" value="${e(room.opening_hours||'08:00-22:00')}" required></label>
+        ${equipmentOptions(room)}
+        <label class="full">使用说明<textarea name="usage_rules" maxlength="500">${e(room.usage_rules)}</textarea></label>
+        <label class="full">全景图片链接<input name="panorama_url" type="url" maxlength="512" placeholder="https://" value="${e(room.panorama_url)}"></label>
+        ${state.identity.role==='SUPER_ADMIN'?`<label class="full">负责管理员编号<input name="manager_user_id" inputmode="numeric" pattern="[0-9]+" value="${e(room.manager_user_id)}" placeholder="填写可用管理员编号，可留空"></label>`:''}
+        </div><div class="form-actions"><button class="btn primary">保存空间</button></div></form>`);
 }
 function statusRoom(id) { const room=state.adminRooms.find(r=>r.room_id===id);if(!room)throw new Error('请刷新房间列表');showModal('调整空间状态',`<div class="summary">${icon('room')}<h3>${e(room.room_name)}</h3></div><form id="room-status-form"><input type="hidden" name="room_id" value="${e(id)}"><div class="form-grid"><label>上架状态<select name="listing_status"><option value="LISTED" ${room.listing_status==='LISTED'?'selected':''}>已上架</option><option value="UNLISTED" ${room.listing_status==='UNLISTED'?'selected':''}>已下架</option></select></label><label>维护状态<select name="maintenance_status"><option value="NORMAL" ${room.maintenance_status==='NORMAL'?'selected':''}>正常</option><option value="MAINTENANCE" ${room.maintenance_status==='MAINTENANCE'?'selected':''}>维护中</option></select></label></div><p class="form-note" style="margin-top:15px">上架和维护状态分别保存，已有预约将保留。存在故障维护时，恢复正常仍需完成故障处理。</p><div class="form-actions"><button class="btn primary">保存状态</button></div></form>`); }
 function processRecord(kind,id) {
